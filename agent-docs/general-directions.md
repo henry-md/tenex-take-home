@@ -1,0 +1,1 @@
+After you make any sort of change, run a linting error to make sure you didn't just create any compiler errors or eggregious linter errors (some small amt of linter errors are sometimes ok but we should try to avoid them).
