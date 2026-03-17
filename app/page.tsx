@@ -30,9 +30,8 @@ export default async function Home() {
                     Triage your inbox without digging through every thread.
                   </h1>
                   <p className="max-w-xl text-base leading-7 text-slate-600 md:text-lg">
-                    Sign in to review recent messages, spot what matters first,
-                    and keep newsletters, receipts, and low-priority updates in
-                    the right place.
+                    Sign in to search Gmail, inspect Calendar, and queue Google
+                    Workspace changes that stay pending until you approve them.
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-4">
@@ -49,22 +48,22 @@ export default async function Home() {
                     <div>
                       <h2 className="text-xl font-semibold">Clear priorities</h2>
                       <p className="mt-1 text-sm leading-6 text-slate-300">
-                        See urgent threads first and push routine updates out of
-                        the way.
+                        Search mail and upcoming events without bouncing between
+                        tabs.
                       </p>
                     </div>
                     <div>
-                      <h2 className="text-xl font-semibold">Fast scanning</h2>
+                      <h2 className="text-xl font-semibold">Safe approvals</h2>
                       <p className="mt-1 text-sm leading-6 text-slate-300">
-                        Review subject lines and previews instead of opening
-                        every message.
+                        Review proposed Gmail and Calendar changes before they
+                        execute.
                       </p>
                     </div>
                     <div>
-                      <h2 className="text-xl font-semibold">Flexible buckets</h2>
+                      <h2 className="text-xl font-semibold">Focused actions</h2>
                       <p className="mt-1 text-sm leading-6 text-slate-300">
-                        Sort around the categories that match how you actually
-                        work through your inbox.
+                        Keep the assistant on narrow Workspace tasks instead of
+                        exposing raw Google APIs.
                       </p>
                     </div>
                   </div>

@@ -12,6 +12,33 @@ enum BucketKind {
   CUSTOM
 }
 
+enum IntegrationProvider {
+  GMAIL
+  GOOGLE_CALENDAR
+}
+
+enum IntegrationActionKind {
+  EMAIL_ARCHIVE
+  EMAIL_MARK_SPAM
+  EMAIL_STAR
+  EMAIL_UNSTAR
+  EMAIL_TRASH
+  EMAIL_APPLY_LABEL
+  EMAIL_REMOVE_LABEL
+  CALENDAR_CREATE_EVENT
+  CALENDAR_UPDATE_EVENT
+  CALENDAR_DELETE_EVENT
+}
+
+enum IntegrationActionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXECUTED
+  FAILED
+  EXPIRED
+}
+
 model User {
   id           String        @id @default(cuid())
   email        String        @unique
@@ -51,4 +78,27 @@ model EmailThread {
   bucketId      String?
   owner         User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   bucket        Bucket?   @relation(fields: [bucketId], references: [id], onDelete: SetNull)
+}
+
+model IntegrationActionDraft {
+  id              String                  @id @default(cuid())
+  ownerEmail      String
+  provider        IntegrationProvider
+  kind            IntegrationActionKind
+  status          IntegrationActionStatus @default(PENDING)
+  title           String?
+  summary         String
+  targetId        String?
+  beforeState     Json?
+  afterState      Json?
+  payload         Json
+  executionResult Json?
+  failureReason   String?
+  expiresAt       DateTime
+  approvedAt      DateTime?
+  executedAt      DateTime?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  @@index([ownerEmail, status, createdAt])
 }

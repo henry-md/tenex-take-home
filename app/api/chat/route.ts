@@ -1,18 +1,12 @@
 import { NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
 import OpenAI from "openai";
 
-type ChatMessage = {
-  role: "user" | "assistant";
-  content: string;
-};
-
-function toResponseInputMessage(message: ChatMessage) {
-  return {
-    role: message.role,
-    content: message.content,
-    type: "message" as const,
-  };
-}
+import { authOptions } from "@/auth";
+import {
+  runGoogleWorkspaceAssistant,
+  type ChatMessage,
+} from "@/lib/assistant/google-workspace-agent";
 
 const apiKey = process.env.OPENAI_API_KEY;
 const model = process.env.OPENAI_MODEL;
@@ -30,6 +24,18 @@ export async function POST(request: Request) {
   }
 
   try {
+    const session = await getServerSession(authOptions);
+    const ownerEmail = session?.user?.email;
+
+    if (!ownerEmail || !session.accessToken || session.authError) {
+      return NextResponse.json(
+        {
+          error: "Sign in with Google again to use the assistant.",
+        },
+        { status: 401 },
+      );
+    }
+
     const body = (await request.json()) as { messages?: ChatMessage[] };
     const messages = body.messages?.filter((message) => message.content.trim());
 
@@ -40,42 +46,15 @@ export async function POST(request: Request) {
       );
     }
 
-    const encoder = new TextEncoder();
-    const responseStream = new ReadableStream({
-      async start(controller) {
-        try {
-          const stream = await client.responses.create({
-            model,
-            stream: true,
-            input: [
-              {
-                role: "system",
-                content: [
-                  {
-                    type: "input_text",
-                    text: "You are Inbox Concierge, a concise assistant for an inbox triage app.",
-                  },
-                ],
-              },
-              ...messages.map(toResponseInputMessage),
-            ],
-          });
-
-          for await (const event of stream) {
-            if (event.type === "response.output_text.delta") {
-              controller.enqueue(encoder.encode(event.delta));
-            }
-          }
-
-          controller.close();
-        } catch (error) {
-          console.error("OpenAI chat stream failed", error);
-          controller.error(error);
-        }
-      },
+    const responseText = await runGoogleWorkspaceAssistant({
+      accessToken: session.accessToken,
+      client,
+      messages,
+      model,
+      ownerEmail,
     });
 
-    return new Response(responseStream, {
+    return new Response(responseText, {
       headers: {
         "Cache-Control": "no-cache, no-transform",
         "Content-Type": "text/plain; charset=utf-8",
