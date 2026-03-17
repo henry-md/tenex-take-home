@@ -7,12 +7,17 @@ import { authOptions } from "@/auth";
 export default async function Home() {
   const session = await getServerSession(authOptions);
   const isAuthenticated = Boolean(session?.user);
+  const firstName = session?.user?.name?.split(" ")[0];
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#f8fafc,_#e2e8f0_55%,_#cbd5e1)] px-6 py-12 text-slate-950">
+    <main
+      className={`min-h-screen bg-[radial-gradient(circle_at_top,_#f8fafc,_#e2e8f0_55%,_#cbd5e1)] px-6 text-slate-950 ${
+        isAuthenticated ? "py-5 md:py-6" : "py-12"
+      }`}
+    >
       <div className="mx-auto max-w-6xl">
         {isAuthenticated ? (
-          <OpenAIChat />
+          <OpenAIChat firstName={firstName} />
         ) : (
           <section className="overflow-hidden rounded-[2rem] border border-white/70 bg-white/80 shadow-[0_30px_80px_rgba(15,23,42,0.12)] backdrop-blur">
             <div className="grid gap-10 px-8 py-10 md:grid-cols-[1.2fr_0.8fr] md:px-12 md:py-12">
@@ -22,37 +27,47 @@ export default async function Home() {
                 </p>
                 <div className="space-y-4">
                   <h1 className="max-w-2xl text-4xl font-semibold tracking-tight text-slate-950 md:text-6xl">
-                    Connect Google Workspace and start sorting your inbox.
+                    Triage your inbox without digging through every thread.
                   </h1>
                   <p className="max-w-xl text-base leading-7 text-slate-600 md:text-lg">
-                    Sign in with Google to grant read-only Gmail access. The
-                    app will use that access to load recent threads and
-                    organize them into triage buckets.
+                    Sign in to review recent messages, spot what matters first,
+                    and keep newsletters, receipts, and low-priority updates in
+                    the right place.
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-4">
                   <AuthButton isAuthenticated={isAuthenticated} />
-                  <p className="text-sm text-slate-500">
-                    Scope requested: Gmail read-only, profile, email.
-                  </p>
                 </div>
               </div>
 
               <aside className="rounded-[1.5rem] bg-slate-950 p-6 text-slate-50">
-                <div className="space-y-4">
+                <div className="space-y-5">
                   <p className="text-sm font-medium uppercase tracking-[0.24em] text-slate-400">
-                    Before you continue
+                    What you get
                   </p>
-                  <h2 className="text-2xl font-semibold">
-                    Create Google OAuth credentials
-                  </h2>
-                  <p className="text-sm leading-6 text-slate-300">
-                    Add the values from <code>.env.example</code> to your local
-                    <code> .env.local</code> file and set the Google OAuth
-                    callback URL to
-                    <code> http://localhost:3000/api/auth/callback/google</code>
-                    .
-                  </p>
+                  <div className="space-y-4">
+                    <div>
+                      <h2 className="text-xl font-semibold">Clear priorities</h2>
+                      <p className="mt-1 text-sm leading-6 text-slate-300">
+                        See urgent threads first and push routine updates out of
+                        the way.
+                      </p>
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-semibold">Fast scanning</h2>
+                      <p className="mt-1 text-sm leading-6 text-slate-300">
+                        Review subject lines and previews instead of opening
+                        every message.
+                      </p>
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-semibold">Flexible buckets</h2>
+                      <p className="mt-1 text-sm leading-6 text-slate-300">
+                        Sort around the categories that match how you actually
+                        work through your inbox.
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </aside>
             </div>

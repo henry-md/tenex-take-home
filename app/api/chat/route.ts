@@ -23,8 +23,7 @@ export async function POST(request: Request) {
   if (!client || !model) {
     return NextResponse.json(
       {
-        error:
-          "OpenAI is not configured. Set OPENAI_API_KEY and OPENAI_MODEL in your environment.",
+        error: "The assistant is temporarily unavailable.",
       },
       { status: 500 },
     );

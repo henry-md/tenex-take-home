@@ -2,23 +2,26 @@
 
 import { FormEvent, useState } from "react";
 
+import { AuthButton } from "@/app/components/auth-button";
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
 };
 
-const starterMessages: ChatMessage[] = [
-  {
-    id: "assistant-intro",
-    role: "assistant",
-    content:
-      "Ask anything about Inbox Concierge. This panel sends messages to the OpenAI API through the app server.",
-  },
-];
+type OpenAIChatProps = {
+  firstName?: string;
+};
 
-export function OpenAIChat() {
-  const [messages, setMessages] = useState<ChatMessage[]>(starterMessages);
+export function OpenAIChat({ firstName }: OpenAIChatProps) {
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    {
+      id: "assistant-intro",
+      role: "assistant",
+      content: `Welcome${firstName ? `, ${firstName}` : ""}. Ask for help sorting messages, defining buckets, or deciding what needs attention first.`,
+    },
+  ]);
   const [input, setInput] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -120,29 +123,34 @@ export function OpenAIChat() {
   }
 
   return (
-    <section className="rounded-[2rem] border border-white/70 bg-white/85 p-6 shadow-[0_30px_80px_rgba(15,23,42,0.12)] backdrop-blur md:p-8">
-      <div className="flex flex-col gap-6">
-        <div className="flex items-start justify-between gap-4">
+    <section className="rounded-[2rem] border border-white/70 bg-white/85 p-5 shadow-[0_30px_80px_rgba(15,23,42,0.12)] backdrop-blur md:p-6">
+      <div className="flex flex-col gap-5">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="space-y-2">
             <p className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">
-              OpenAI chat
+              Inbox Concierge
             </p>
             <h2 className="text-2xl font-semibold tracking-tight text-slate-950">
-              Test a simple assistant directly in the UI
+              Organize what matters first
             </h2>
             <p className="max-w-2xl text-sm leading-6 text-slate-600">
-              This is a minimal chat surface backed by the OpenAI API. The API
-              key stays server-side and the model name comes from your
-              environment configuration.
+              Use the assistant to pressure-test bucket ideas, draft triage
+              rules, and decide which conversations deserve immediate follow-up.
             </p>
           </div>
-          <div className="rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-medium uppercase tracking-[0.2em] text-slate-500">
-            Server-routed
+          <div className="flex items-center gap-3 self-start">
+            <div className="rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-medium uppercase tracking-[0.2em] text-emerald-700">
+              Ready
+            </div>
+            <AuthButton
+              className="px-4 py-2.5 text-sm"
+              isAuthenticated
+            />
           </div>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-[1.4fr_0.6fr]">
-          <div className="flex min-h-[28rem] flex-col overflow-hidden rounded-[1.5rem] border border-slate-200 bg-slate-50">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.45fr)_19rem]">
+          <div className="flex min-h-[24rem] flex-col overflow-hidden rounded-[1.5rem] border border-slate-200 bg-slate-50 lg:h-[30rem] lg:min-h-0">
             <div className="flex-1 space-y-4 overflow-y-auto p-4 md:p-5">
               {messages.map((message) => (
                 <article
@@ -159,19 +167,19 @@ export function OpenAIChat() {
             </div>
 
             <form
-              className="border-t border-slate-200 bg-white p-4 md:p-5"
+              className="border-t border-slate-200 bg-white p-4"
               onSubmit={handleSubmit}
             >
               <div className="flex flex-col gap-3">
                 <textarea
-                  className="min-h-28 rounded-[1.25rem] border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                  className="min-h-24 rounded-[1.25rem] border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
                   onChange={(event) => setInput(event.target.value)}
-                  placeholder="Ask the assistant about inbox triage, product ideas, or anything else."
+                  placeholder="Ask about sorting priorities, custom buckets, or how to handle a tricky thread."
                   value={input}
                 />
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs text-slate-500">
-                    Responses are generated by your configured OpenAI model.
+                    Keep prompts short and specific for sharper triage advice.
                   </p>
                   <button
                     className="rounded-full bg-slate-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
@@ -188,27 +196,15 @@ export function OpenAIChat() {
             </form>
           </div>
 
-          <aside className="rounded-[1.5rem] bg-slate-950 p-5 text-slate-50">
+          <aside className="rounded-[1.5rem] bg-slate-950 p-5 text-slate-50 lg:h-[30rem]">
             <div className="space-y-4">
               <p className="text-sm font-medium uppercase tracking-[0.24em] text-slate-400">
-                Configuration
+                Try asking
               </p>
               <div className="space-y-3 text-sm leading-6 text-slate-300">
-                <p>
-                  Required env vars:
-                  <br />
-                  <code>OPENAI_API_KEY</code>
-                  <br />
-                  <code>OPENAI_MODEL</code>
-                </p>
-                <p>
-                  The browser only calls <code>/api/chat</code>. The OpenAI API
-                  key is never exposed to the client.
-                </p>
-                <p>
-                  The route currently sends the full visible chat history on
-                  each request for a simple multi-turn conversation.
-                </p>
+                <p>&ldquo;Which inbox buckets should I start with for client work?&rdquo;</p>
+                <p>&ldquo;How would you separate receipts from important finance emails?&rdquo;</p>
+                <p>&ldquo;What should go into a custom bucket for hiring conversations?&rdquo;</p>
               </div>
             </div>
           </aside>
