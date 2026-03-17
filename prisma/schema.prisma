@@ -1,0 +1,53 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum BucketKind {
+  SYSTEM
+  CUSTOM
+}
+
+model User {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  name         String?
+  image        String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  buckets      Bucket[]
+  emailThreads EmailThread[]
+}
+
+model Bucket {
+  id           String        @id @default(cuid())
+  name         String
+  kind         BucketKind    @default(CUSTOM)
+  description  String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  ownerId      String?
+  owner        User?         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  emailThreads EmailThread[]
+
+  @@unique([ownerId, name])
+}
+
+model EmailThread {
+  id            String    @id @default(cuid())
+  gmailThreadId String    @unique
+  subject       String
+  preview       String
+  sender        String?
+  lastMessageAt DateTime?
+  archived      Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  ownerId       String
+  bucketId      String?
+  owner         User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  bucket        Bucket?   @relation(fields: [bucketId], references: [id], onDelete: SetNull)
+}
