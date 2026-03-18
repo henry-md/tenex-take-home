@@ -72,6 +72,7 @@ type EmailResult = {
 
 type ActionDraft = {
   affectedCount: number;
+  affectedEmails?: EmailResult[];
   afterState: unknown;
   beforeState: unknown;
   createdAt: string;
@@ -139,6 +140,10 @@ function getDraftCountLabel(draft: ActionDraft) {
   }
 
   return `${draft.affectedCount} event${draft.affectedCount === 1 ? "" : "s"}`;
+}
+
+function getDraftAffectedSummaryLabel(draft: ActionDraft) {
+  return `${getDraftCountLabel(draft)} ${draft.affectedCount === 1 ? "is" : "are"} affected`;
 }
 
 function formatToolCallName(name: string) {
@@ -823,9 +828,38 @@ export function OpenAIChat({
                 <h3 className="text-sm font-semibold text-white">
                   {getDraftActionLabel(draft)}
                 </h3>
-                <p className="mt-2 text-xs leading-5 text-slate-300">
-                  {getDraftCountLabel(draft)}
-                </p>
+                {draft.provider === "GMAIL" && draft.affectedEmails?.length ? (
+                  <details className="group mt-2 overflow-hidden rounded-[1.1rem] border border-slate-800 bg-slate-950/70">
+                    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-left transition hover:bg-slate-800/80 [&::-webkit-details-marker]:hidden">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-slate-900 text-slate-300">
+                          <ChevronRight
+                            aria-hidden="true"
+                            className="details-chevron h-2.5 w-2.5"
+                            strokeWidth={2.25}
+                          />
+                        </span>
+                        <span className="text-xs leading-5 text-slate-300">
+                          {getDraftAffectedSummaryLabel(draft)}
+                        </span>
+                      </div>
+                    </summary>
+                    <div className="border-t border-slate-800 bg-slate-900/40 p-2">
+                      <div className="space-y-2">
+                        {draft.affectedEmails.map((email) => (
+                          <EmailResultCard
+                            key={`${draft.id}-${email.threadId}`}
+                            email={email}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </details>
+                ) : (
+                  <p className="mt-2 text-xs leading-5 text-slate-300">
+                    {getDraftCountLabel(draft)}
+                  </p>
+                )}
 
                 <div className="mt-3 flex gap-2">
                   <button

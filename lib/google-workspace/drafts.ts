@@ -11,6 +11,57 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "The Google action failed.";
 }
 
+type SerializedAffectedEmail = {
+  body: string;
+  lastMessageAt: string | null;
+  sender: string | null;
+  snippet: string;
+  subject: string;
+  threadId: string;
+};
+
+function serializeAffectedEmails(
+  draft: IntegrationActionDraft,
+): SerializedAffectedEmail[] | undefined {
+  if (draft.provider !== "GMAIL") {
+    return undefined;
+  }
+
+  const beforeState = draft.beforeState as
+    | {
+        threads?: Array<{
+          body?: unknown;
+          id?: unknown;
+          lastMessageAt?: unknown;
+          sender?: unknown;
+          snippet?: unknown;
+          subject?: unknown;
+        }>;
+      }
+    | null;
+
+  const threads = Array.isArray(beforeState?.threads) ? beforeState.threads : [];
+  const affectedEmails = threads.flatMap((thread) => {
+    if (typeof thread.id !== "string" || !thread.id.trim()) {
+      return [];
+    }
+
+    return [
+      {
+        body: typeof thread.body === "string" ? thread.body : "",
+        lastMessageAt:
+          typeof thread.lastMessageAt === "string" ? thread.lastMessageAt : null,
+        sender: typeof thread.sender === "string" ? thread.sender : null,
+        snippet: typeof thread.snippet === "string" ? thread.snippet : "",
+        subject: typeof thread.subject === "string" ? thread.subject : "Untitled email",
+        threadId: thread.id,
+      },
+    ];
+  });
+
+  return affectedEmails.length ? affectedEmails : undefined;
+}
+
 function serializeDraft(draft: IntegrationActionDraft) {
   const payload = draft.payload as {
     threadId?: string;
@@ -30,6 +81,7 @@ function serializeDraft(draft: IntegrationActionDraft) {
 
   return {
     affectedCount,
+    affectedEmails: serializeAffectedEmails(draft),
     afterState: draft.afterState,
     beforeState: draft.beforeState,
     createdAt: draft.createdAt.toISOString(),
