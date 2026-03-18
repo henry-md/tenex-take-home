@@ -223,6 +223,11 @@ type InboxStatePayload = {
   version: 2;
 };
 
+type LoadedInboxStatePayload = {
+  payload: InboxStatePayload;
+  requiresSave: boolean;
+};
+
 type BucketMembershipClassification = {
   applies: boolean;
   confidence: number;
@@ -307,41 +312,89 @@ function getInboxStateCacheKeyHash(cacheKey: string) {
   return createHash("sha256").update(cacheKey).digest("hex");
 }
 
-function getInboxStateCacheRow(ownerId: string, cacheKey: string) {
-  return prisma.inboxClassificationCache.findUnique({
-    where: {
-      ownerId_cacheKeyHash: {
-        cacheKeyHash: getInboxStateCacheKeyHash(cacheKey),
-        ownerId,
-      },
-    },
-    select: {
-      payload: true,
-    },
-  });
+function createLimitedInboxStatePayload(
+  payload: InboxStatePayload,
+  configuredThreadLimit: number,
+) {
+  const limitedPayload = createEmptyInboxStatePayload(configuredThreadLimit);
+  const limitedThreadIds = payload.threadIds.slice(0, configuredThreadLimit);
+
+  for (const threadId of limitedThreadIds) {
+    const snapshot = payload.threadsById[threadId];
+
+    if (!snapshot) {
+      continue;
+    }
+
+    limitedPayload.threadIds.push(threadId);
+    limitedPayload.threadsById[threadId] = snapshot;
+    limitedPayload.bucketMembershipsByThreadId[threadId] = {
+      ...(payload.bucketMembershipsByThreadId[threadId] ?? {}),
+    };
+  }
+
+  return limitedPayload;
 }
 
 async function loadInboxStatePayload(ownerId: string, configuredThreadLimit: number) {
-  const cacheKey = getInboxStateCacheKey(configuredThreadLimit);
-  const row = await getInboxStateCacheRow(ownerId, cacheKey);
+  const rows = await prisma.inboxClassificationCache.findMany({
+    where: {
+      cacheKey: {
+        startsWith: INBOX_STATE_CACHE_KEY_PREFIX,
+      },
+      ownerId,
+    },
+    select: {
+      cacheKey: true,
+      payload: true,
+      updatedAt: true,
+    },
+  });
+  const compatibleRows = rows
+    .flatMap((row) => {
+      const payload = parseInboxStatePayload(row.payload);
 
-  if (row) {
-    return parseInboxStatePayload(row.payload);
-  }
+      if (!payload || payload.configuredThreadLimit < configuredThreadLimit) {
+        return [];
+      }
 
-  const legacyRow = await getInboxStateCacheRow(ownerId, INBOX_STATE_CACHE_KEY_PREFIX);
+      return [
+        {
+          cacheKey: row.cacheKey,
+          payload,
+          updatedAt: row.updatedAt,
+        },
+      ];
+    })
+    .sort((left, right) => {
+      const updatedAtDelta = right.updatedAt.getTime() - left.updatedAt.getTime();
 
-  if (!legacyRow) {
+      if (updatedAtDelta !== 0) {
+        return updatedAtDelta;
+      }
+
+      return left.payload.configuredThreadLimit - right.payload.configuredThreadLimit;
+    });
+  const compatibleRow = compatibleRows[0];
+
+  if (!compatibleRow) {
     return null;
   }
 
-  const parsedLegacyPayload = parseInboxStatePayload(legacyRow.payload);
-
-  if (parsedLegacyPayload?.configuredThreadLimit !== configuredThreadLimit) {
-    return null;
+  if (compatibleRow.payload.configuredThreadLimit === configuredThreadLimit) {
+    return {
+      payload: compatibleRow.payload,
+      requiresSave: compatibleRow.cacheKey !== getInboxStateCacheKey(configuredThreadLimit),
+    } satisfies LoadedInboxStatePayload;
   }
 
-  return parsedLegacyPayload;
+  return {
+    payload: createLimitedInboxStatePayload(
+      compatibleRow.payload,
+      configuredThreadLimit,
+    ),
+    requiresSave: true,
+  } satisfies LoadedInboxStatePayload;
 }
 
 async function saveInboxStatePayload(ownerId: string, payload: InboxStatePayload) {
@@ -1060,14 +1113,7 @@ async function restoreDefaultBuckets(ownerId: string) {
     nextSortOrder += 1;
   }
 
-  await prisma.$transaction([
-    ...operations,
-    prisma.inboxClassificationCache.deleteMany({
-      where: {
-        ownerId,
-      },
-    }),
-  ]);
+  await prisma.$transaction(operations);
 
   return ensureOwnerBuckets(ownerId);
 }
@@ -1678,21 +1724,14 @@ export async function deleteBucketSetting(input: {
     throw new Error("Bucket not found.");
   }
 
-  await prisma.$transaction([
-    prisma.bucket.delete({
-      where: {
-        id: bucket.id,
-      },
-      select: {
-        id: true,
-      },
-    }),
-    prisma.inboxClassificationCache.deleteMany({
-      where: {
-        ownerId: owner.id,
-      },
-    }),
-  ]);
+  await prisma.bucket.delete({
+    where: {
+      id: bucket.id,
+    },
+    select: {
+      id: true,
+    },
+  });
 
   return listBucketSettings({
     ownerEmail: input.ownerEmail,
@@ -1781,7 +1820,8 @@ export async function getInboxRefreshStatus(input: {
     name: input.ownerName,
   });
   const inboxThreadLimit = await getWorkspaceInboxThreadLimit(input.ownerEmail);
-  const parsedPayload = await loadInboxStatePayload(owner.id, inboxThreadLimit);
+  const cachedState = await loadInboxStatePayload(owner.id, inboxThreadLimit);
+  const parsedPayload = cachedState?.payload ?? null;
 
   if (!parsedPayload) {
     return {
@@ -1821,19 +1861,16 @@ export async function loadInboxHomepage(input: {
   const buckets = await ensureOwnerBuckets(owner.id);
   const inboxThreadLimit = await getWorkspaceInboxThreadLimit(input.ownerEmail);
   const sortingStartedAt = performance.now();
-  const cachedPayload = await loadInboxStatePayload(owner.id, inboxThreadLimit);
+  const cachedState = await loadInboxStatePayload(owner.id, inboxThreadLimit);
+  const cachedPayload = cachedState?.payload ?? null;
 
-  if (
-    cachedPayload &&
-    !input.refresh &&
-    cachedPayload.configuredThreadLimit === inboxThreadLimit
-  ) {
+  if (cachedPayload && !input.refresh) {
     const hadMembershipUpdates = await ensureBucketMembershipsAreCurrent(
       cachedPayload,
       buckets,
     );
 
-    if (hadMembershipUpdates) {
+    if (hadMembershipUpdates || cachedState?.requiresSave) {
       await saveInboxStatePayload(owner.id, cachedPayload);
     }
 

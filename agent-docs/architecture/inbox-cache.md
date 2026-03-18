@@ -9,7 +9,7 @@ Keep inbox bucketing reusable across two independent change types:
 
 ## Stored shape
 
-Inbox cache now lives as one active owner-scoped row in `InboxClassificationCache`. The payload stores reusable classification state instead of a pre-rendered board blob:
+Inbox cache lives as owner-scoped `InboxClassificationCache` rows keyed by thread limit. Each payload stores reusable classification state instead of a pre-rendered board blob:
 
 - `threadIds`
   - ordered Gmail thread ids for the current inbox snapshot and configured limit
@@ -20,14 +20,19 @@ Inbox cache now lives as one active owner-scoped row in `InboxClassificationCach
   - per-thread, per-bucket cached membership decisions
   - each entry stores `applies`, `confidence`, `rationale`, `source`, the thread fingerprint used at evaluation time, and the bucket prompt hash used at evaluation time
 
+At read time, the runtime treats cached thread snapshots and cached bucket memberships independently:
+
+- a smaller thread limit can reuse the freshest cached payload whose thread limit is greater than or equal to the requested limit by slicing the ordered `threadIds`
+- bucket deletions and default-bucket resets keep cached thread snapshots available, so the next inbox load only recomputes memberships
+
 ## Runtime behavior
 
 `GET /api/inbox` has two modes:
 
 - default load
-  - uses cached `threadIds`, cached thread snapshots, and cached bucket memberships
-  - does not hit Gmail when the stored snapshot already matches the current configured inbox limit
-  - if bucket prompts changed, only stale bucket memberships are recomputed from cached thread snapshots
+  - uses the freshest compatible cached `threadIds`, cached thread snapshots, and cached bucket memberships
+  - does not hit Gmail when a cached snapshot already covers the current configured inbox limit
+  - if bucket prompts changed, or the active bucket set changed, only stale bucket memberships are recomputed from cached thread snapshots
 - refresh load
   - triggered with `?refresh=1`
   - fetches the latest inbox thread ids from Gmail, then fetches summaries for the current top thread set
@@ -44,10 +49,11 @@ Inbox cache now lives as one active owner-scoped row in `InboxClassificationCach
   - reuse the cached membership result directly
 
 This is why a bucket edit no longer forces a full inbox re-sort.
+This is also why shrinking the inbox thread limit can now be a cache hit with no Gmail read.
 
 ## Refresh status
 
-`GET /api/inbox-status` now checks only the ordered inbox thread ids from Gmail. It compares those ids against cached `threadIds` and reports how many positions are currently unsorted relative to the cached board. It does not fetch full thread bodies or rerun classification.
+`GET /api/inbox-status` now checks only the ordered inbox thread ids from Gmail. It compares those ids against the freshest compatible cached `threadIds` and reports how many positions are currently unsorted relative to the cached board. It does not fetch full thread bodies or rerun classification.
 
 ## UI contract
 

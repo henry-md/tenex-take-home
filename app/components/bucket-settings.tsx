@@ -11,7 +11,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/app/components/ui/alert-dialog";
-import { GripVertical, Plus, Save, Trash2 } from "lucide-react";
+import { GripVertical, Plus, RotateCcw, Save, Trash2 } from "lucide-react";
 import {
   type DragEvent,
   type PointerEvent as ReactPointerEvent,
@@ -158,10 +158,9 @@ export function BucketSettings({
     );
   }
 
-  function clearLocalInboxState() {
+  function clearLocalDashboardState() {
     clearCachedInbox();
     window.localStorage.removeItem(INBOX_PENDING_SORT_REASON_STORAGE_KEY);
-    setHasInboxCache(false);
   }
 
   async function persistBucketOrder(
@@ -335,6 +334,7 @@ export function BucketSettings({
         throw new Error(payload?.error ?? "Unable to invalidate inbox cache.");
       }
 
+      clearLocalDashboardState();
       setHasInboxCache(false);
       toast.success("Inbox classification cache cleared.");
     } catch (error) {
@@ -476,7 +476,7 @@ export function BucketSettings({
         buckets: BucketSetting[];
       };
 
-      clearLocalInboxState();
+      clearLocalDashboardState();
       setArmedDragBucketId(null);
       setDraggingBucketId(null);
       setDropTargetBucketId(null);
@@ -524,7 +524,7 @@ export function BucketSettings({
         buckets: BucketSetting[];
       };
 
-      clearLocalInboxState();
+      clearLocalDashboardState();
       setArmedDragBucketId(null);
       setDraggingBucketId(null);
       setDropTargetBucketId(null);
@@ -544,32 +544,23 @@ export function BucketSettings({
   return (
     <section className="rounded-[2rem] border border-white/70 bg-white/88 p-6 shadow-[0_30px_80px_rgba(15,23,42,0.12)] backdrop-blur md:p-8">
       <div className="space-y-6">
-        <div className="max-w-3xl">
-          <p className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">
-            Buckets
-          </p>
-          <h2 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">
-            Classification prompts
-          </h2>
-          <p className="mt-2 text-sm leading-6 text-slate-600">
-            Shape the taxonomy however you want. Add, rewrite, reorder, delete,
-            and, if needed, restore the stock bucket set as a starting point.
-          </p>
-        </div>
-
-        <section className="rounded-[1.5rem] border border-slate-200 bg-[linear-gradient(180deg,rgba(248,250,252,0.96),rgba(241,245,249,0.92))] p-5">
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div className="max-w-2xl">
-              <h3 className="text-lg font-semibold text-slate-950">
-                Reset stock buckets
-              </h3>
-              <p className="mt-1 text-sm leading-6 text-slate-600">
-                Recreate the current built-in bucket set and restore their
-                starter prompts. Any custom buckets you made stay in place.
-              </p>
-            </div>
+        <div className="space-y-3">
+          <div className="max-w-3xl">
+            <p className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">
+              Buckets
+            </p>
+            <h2 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">
+              Classification prompts
+            </h2>
+          </div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="max-w-3xl text-sm leading-6 text-slate-600">
+              Shape the taxonomy however you want. Add, rewrite, reorder, delete,
+              and, if needed, restore the stock bucket set as a starting point.
+            </p>
             <button
-              className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white px-5 py-2.5 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+              aria-label="Reset buckets to defaults"
+              className="inline-flex shrink-0 items-center justify-center gap-2 self-start rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:text-slate-400 sm:self-center"
               disabled={
                 isResettingDefaults ||
                 Boolean(deletingBucketId) ||
@@ -579,12 +570,18 @@ export function BucketSettings({
                 isInvalidatingCache
               }
               onClick={() => void handleResetDefaults()}
+              title="Reset to defaults"
               type="button"
             >
-              {isResettingDefaults ? "Resetting..." : "Reset to defaults"}
+              <RotateCcw
+                aria-hidden="true"
+                className={isResettingDefaults ? "h-4 w-4 animate-spin" : "h-4 w-4"}
+                strokeWidth={2}
+              />
+              <span>{isResettingDefaults ? "Resetting..." : "Reset to defaults"}</span>
             </button>
           </div>
-        </section>
+        </div>
 
         <section className="rounded-[1.5rem] border border-slate-200 bg-[linear-gradient(180deg,rgba(249,250,251,0.96),rgba(244,247,250,0.92))] p-5">
           <div className="flex flex-col gap-4">
@@ -706,9 +703,9 @@ export function BucketSettings({
                         <AlertDialogHeader>
                           <AlertDialogTitle>Delete {bucket.name}?</AlertDialogTitle>
                           <AlertDialogDescription>
-                            This removes the bucket and clears the saved inbox
-                            classification state so the next inbox load can
-                            re-sort emails against your remaining buckets.
+                            This removes the bucket. Cached thread snapshots stay
+                            available, and the next inbox load only needs to
+                            recompute memberships against your remaining buckets.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>

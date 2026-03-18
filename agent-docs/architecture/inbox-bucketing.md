@@ -8,8 +8,8 @@ Make the authenticated homepage inbox-first by loading the latest configured Gma
 
 1. `GET /api/inbox` authenticates the Google session and loads the owner identity.
 2. `lib/inbox/classification.ts` loads the owner's current bucket taxonomy from Prisma.
-3. The server stores one active inbox-state payload per owner in `InboxClassificationCache` instead of caching only a rendered board.
-4. That payload keeps the ordered inbox thread ids, normalized cached thread snapshots, and per-thread/per-bucket membership decisions.
+3. The server stores reusable inbox-state payloads in `InboxClassificationCache`, keyed by thread limit instead of caching only a rendered board.
+4. Each payload keeps the ordered inbox thread ids, normalized cached thread snapshots, and per-thread/per-bucket membership decisions.
 5. Deterministic heuristics classify obvious newsletters, finance mail, auto-archive candidates, important threads, and personal mail first, but those heuristic matches are additive rather than exclusive.
 6. The OpenAI Responses API returns a list of bucket names for each thread, so one thread can appear in multiple buckets.
 7. When Gmail refreshes, only changed thread snapshots are reclassified across all buckets.
@@ -24,7 +24,7 @@ Make the authenticated homepage inbox-first by loading the latest configured Gma
 - The stock bucket set ships with starter prompts that guide the LLM toward the intended category semantics.
 - Custom buckets are first-class options in the LLM prompt, not post-processing filters.
 - Adding or editing one bucket no longer forces the server to re-fetch Gmail or reclassify every bucket for every cached thread.
-- Deleting any bucket clears the saved inbox classification cache so the next inbox load can recompute memberships against the remaining taxonomy.
+- Deleting a bucket or resetting defaults keeps cached thread snapshots available so the next inbox load can recompute memberships without re-reading Gmail threads.
 - Stock buckets are no longer auto-recreated on read. They come back only when the user explicitly resets the bucket set.
 
 ## UI boundary
@@ -45,6 +45,7 @@ Make the authenticated homepage inbox-first by loading the latest configured Gma
 
 - `loadInboxHomepage` records Gmail fetch time separately from inbox sorting time.
 - Gmail fetch time covers inbox refresh loads only. Cached dashboard loads can legitimately report `0ms` Gmail fetch time because they reuse the stored inbox snapshot.
+- A smaller inbox thread limit can reuse the freshest larger compatible cached snapshot, so changes like `200 -> 100` can stay on the cache-hit path.
 - Refresh loads first list inbox thread ids from Gmail, then fetch summaries only for the current top thread set.
 - Sorting time includes cache lookup, selective reclassification for changed threads or stale bucket memberships, and cache write.
 - `GET /api/inbox` returns both timings so the dashboard can show two success toasts: one for Gmail fetch and one for sorting.

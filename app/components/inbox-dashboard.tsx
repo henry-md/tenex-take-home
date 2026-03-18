@@ -243,7 +243,7 @@ function showInboxLoadToasts(payload: InboxHomepageResponse) {
   if (payload.gmailFetch.durationMs === 0) {
     toast.success(
       payload.sorting.cacheHit
-        ? "Loaded cached inbox snapshot."
+        ? "Loaded cached inbox snapshot (cache hit)."
         : "Loaded cached inbox snapshot and refreshed bucket memberships.",
       { duration: INBOX_LOAD_TOAST_DURATION_MS },
     );
@@ -309,7 +309,6 @@ export function InboxDashboard({
   firstName,
   initialInboxThreadLimit,
 }: InboxDashboardProps) {
-  const forceInitialRefreshRef = useRef(false);
   const initialLoadStartedRef = useRef(false);
   const initialInboxThreadLimitRef = useRef(initialInboxThreadLimit);
   const initialBackgroundSyncStartedRef = useRef(false);
@@ -452,7 +451,6 @@ export function InboxDashboard({
     );
     const storedValue = window.localStorage.getItem("inbox-dashboard-hero-hidden");
     const pendingSortReason = readPendingSortReason();
-    forceInitialRefreshRef.current = Boolean(pendingInboxRefresh);
 
     if (cachedInbox) {
       hydratedFromStorageRef.current = true;
@@ -488,7 +486,6 @@ export function InboxDashboard({
 
     void loadInbox({
       isInitialLoad: true,
-      refresh: forceInitialRefreshRef.current,
       showSuccessToast: true,
       showSortingOverlay: !hydratedFromStorageRef.current,
       silent: true,
@@ -548,6 +545,7 @@ export function InboxDashboard({
   const activeSyncLabel = activeSyncIndicator
     ? getActiveSyncLabel(activeSyncIndicator)
     : null;
+  const isSyncingNewEmail = activeSyncIndicator?.kind === "new-email";
 
   return (
     <section className="space-y-6">
@@ -562,7 +560,7 @@ export function InboxDashboard({
               />
               <span className="min-w-0 truncate">{activeSyncLabel}</span>
             </div>
-            {activeSyncIndicator.kind === "new-email" ? (
+            {isSyncingNewEmail ? (
               <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-sky-100">
                 <div className="h-full w-2/5 animate-pulse rounded-full bg-sky-500" />
               </div>
@@ -654,7 +652,7 @@ export function InboxDashboard({
               />
             </span>
             <h2 className="mt-6 text-2xl font-semibold tracking-tight text-slate-950">
-              Sorting your inbox
+              Loading your inbox
             </h2>
             <p className="mt-3 max-w-xl text-sm leading-7 text-slate-600">
               Fetching recent emails and grouping them into your configured
@@ -675,7 +673,7 @@ export function InboxDashboard({
                   strokeWidth={2}
                 />
                 <div className="min-w-0 flex-1">
-                  <p className="font-semibold">Sorting your inbox</p>
+                  <p className="font-semibold">Loading your inbox</p>
                   <p className="text-sky-800/80">
                     Fetching recent emails and grouping them into your configured buckets now.
                   </p>
