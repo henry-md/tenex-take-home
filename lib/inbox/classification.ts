@@ -121,10 +121,12 @@ const model = process.env.OPENAI_MODEL;
 const openAIClient = apiKey ? new OpenAI({ apiKey }) : null;
 
 type BucketRecord = {
+  createdAt: Date;
   description: string | null;
   id: string;
   kind: BucketKind;
   name: string;
+  sortOrder: number;
 };
 
 export type BucketSetting = {
@@ -307,6 +309,100 @@ function sortBuckets(buckets: BucketRecord[]) {
     }
 
     return left.name.localeCompare(right.name);
+  });
+}
+
+function sortBucketSettingsForDisplay(buckets: BucketRecord[]) {
+  return [...buckets].sort((left, right) => {
+    if (left.sortOrder !== right.sortOrder) {
+      return left.sortOrder - right.sortOrder;
+    }
+
+    if (left.kind !== right.kind) {
+      return left.kind === BucketKind.CUSTOM ? -1 : 1;
+    }
+
+    if (left.kind === BucketKind.CUSTOM && right.kind === BucketKind.CUSTOM) {
+      const createdAtDelta = right.createdAt.getTime() - left.createdAt.getTime();
+
+      if (createdAtDelta !== 0) {
+        return createdAtDelta;
+      }
+    }
+
+    const leftRank = getBucketSortKey(left.name);
+    const rightRank = getBucketSortKey(right.name);
+
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+
+    return left.name.localeCompare(right.name);
+  });
+}
+
+function getInitialBucketSettingsOrder(buckets: BucketRecord[]) {
+  return [...buckets].sort((left, right) => {
+    if (left.kind !== right.kind) {
+      return left.kind === BucketKind.CUSTOM ? -1 : 1;
+    }
+
+    if (left.kind === BucketKind.CUSTOM && right.kind === BucketKind.CUSTOM) {
+      const createdAtDelta = right.createdAt.getTime() - left.createdAt.getTime();
+
+      if (createdAtDelta !== 0) {
+        return createdAtDelta;
+      }
+    }
+
+    const leftRank = getBucketSortKey(left.name);
+    const rightRank = getBucketSortKey(right.name);
+
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+
+    return left.name.localeCompare(right.name);
+  });
+}
+
+async function normalizeBucketSortOrders(ownerId: string, buckets: BucketRecord[]) {
+  const uniqueSortOrders = new Set(buckets.map((bucket) => bucket.sortOrder));
+
+  if (uniqueSortOrders.size === buckets.length) {
+    return buckets;
+  }
+
+  const orderedBuckets = getInitialBucketSettingsOrder(buckets);
+
+  await prisma.$transaction(
+    orderedBuckets.map((bucket, index) =>
+      prisma.bucket.update({
+        where: {
+          id: bucket.id,
+        },
+        data: {
+          sortOrder: index,
+        },
+        select: {
+          id: true,
+        },
+      }),
+    ),
+  );
+
+  return prisma.bucket.findMany({
+    where: {
+      ownerId,
+    },
+    select: {
+      createdAt: true,
+      description: true,
+      id: true,
+      kind: true,
+      name: true,
+      sortOrder: true,
+    },
   });
 }
 
@@ -577,10 +673,12 @@ async function ensureOwnerBuckets(ownerId: string) {
       ownerId,
     },
     select: {
+      createdAt: true,
       description: true,
       id: true,
       kind: true,
       name: true,
+      sortOrder: true,
     },
   });
   const existingBucketMap = new Map(
@@ -597,6 +695,7 @@ async function ensureOwnerBuckets(ownerId: string) {
         kind: BucketKind.SYSTEM,
         name: bucket.name,
         ownerId,
+        sortOrder: 1_000 + getBucketSortKey(bucket.name),
       })),
       skipDuplicates: true,
     });
@@ -632,14 +731,16 @@ async function ensureOwnerBuckets(ownerId: string) {
       ownerId,
     },
     select: {
+      createdAt: true,
       description: true,
       id: true,
       kind: true,
       name: true,
+      sortOrder: true,
     },
   });
 
-  return sortBuckets(allBuckets);
+  return sortBuckets(await normalizeBucketSortOrders(ownerId, allBuckets));
 }
 
 function normalizePreview(thread: EmailThreadSummary) {
@@ -734,6 +835,18 @@ export async function createCustomBucket(input: {
 
   await ensureOwnerBuckets(owner.id);
 
+  const earliestBucket = await prisma.bucket.findFirst({
+    where: {
+      ownerId: owner.id,
+    },
+    orderBy: {
+      sortOrder: "asc",
+    },
+    select: {
+      sortOrder: true,
+    },
+  });
+
   const existingBucket = await prisma.bucket.findFirst({
     where: {
       ownerId: owner.id,
@@ -759,6 +872,7 @@ export async function createCustomBucket(input: {
         : BucketKind.CUSTOM,
       name: trimmedName,
       ownerId: owner.id,
+      sortOrder: (earliestBucket?.sortOrder ?? 0) - 1,
     },
     select: {
       id: true,
@@ -778,7 +892,7 @@ export async function listBucketSettings(input: {
     image: input.ownerImage,
     name: input.ownerName,
   });
-  const buckets = await ensureOwnerBuckets(owner.id);
+  const buckets = sortBucketSettingsForDisplay(await ensureOwnerBuckets(owner.id));
 
   return buckets.map(
     (bucket) =>
@@ -824,6 +938,65 @@ export async function updateBucketPrompt(input: {
   if (!result.count) {
     throw new Error("Bucket not found.");
   }
+
+  return listBucketSettings({
+    ownerEmail: input.ownerEmail,
+  });
+}
+
+export async function reorderBucketSettings(input: {
+  bucketIds: string[];
+  ownerEmail: string;
+}) {
+  const owner = await prisma.user.findUnique({
+    where: {
+      email: input.ownerEmail,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!owner) {
+    throw new Error("Bucket owner not found.");
+  }
+
+  const uniqueBucketIds = [...new Set(input.bucketIds)];
+
+  const existingBuckets = await prisma.bucket.findMany({
+    where: {
+      ownerId: owner.id,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (uniqueBucketIds.length !== existingBuckets.length) {
+    throw new Error("Bucket reorder payload is incomplete.");
+  }
+
+  const existingBucketIds = new Set(existingBuckets.map((bucket) => bucket.id));
+
+  if (uniqueBucketIds.some((bucketId) => !existingBucketIds.has(bucketId))) {
+    throw new Error("Bucket reorder payload is invalid.");
+  }
+
+  await prisma.$transaction(
+    uniqueBucketIds.map((bucketId, index) =>
+      prisma.bucket.update({
+        where: {
+          id: bucketId,
+        },
+        data: {
+          sortOrder: index,
+        },
+        select: {
+          id: true,
+        },
+      }),
+    ),
+  );
 
   return listBucketSettings({
     ownerEmail: input.ownerEmail,

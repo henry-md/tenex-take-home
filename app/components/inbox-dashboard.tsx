@@ -8,6 +8,7 @@ import {
 import {
   ChevronRight,
   Inbox,
+  LoaderCircle,
   RefreshCw,
   Sparkles,
   X,
@@ -130,17 +131,27 @@ function ThreadRow({ thread }: { thread: InboxThreadItem }) {
   );
 }
 
-function BucketSkeleton() {
-  return (
-    <div className="rounded-[1.75rem] border border-slate-200 bg-white/75 p-5">
-      <div className="h-5 w-32 rounded-full bg-slate-200" />
-      <div className="mt-3 h-4 w-56 rounded-full bg-slate-100" />
-      <div className="mt-5 space-y-3">
-        <div className="h-16 rounded-[1rem] bg-slate-100" />
-        <div className="h-16 rounded-[1rem] bg-slate-100" />
-        <div className="h-16 rounded-[1rem] bg-slate-100" />
-      </div>
-    </div>
+type InboxHomepageResponse = {
+  inbox: InboxHomepageData;
+  sorting: {
+    cacheHit: boolean;
+    durationMs: number;
+    sortedEmailCount: number;
+  };
+};
+
+function formatSortDuration(durationMs: number) {
+  if (durationMs < 1000) {
+    return `${durationMs}ms`;
+  }
+
+  return `${(durationMs / 1000).toFixed(durationMs >= 10_000 ? 0 : 1)}s`;
+}
+
+function showSortingCompleteToast(sortedEmailCount: number, durationMs: number) {
+  toast.success(
+    `${sortedEmailCount} emails sorted in ${formatSortDuration(durationMs)}.`,
+    { duration: Infinity },
   );
 }
 
@@ -157,7 +168,7 @@ async function fetchInboxHomepage() {
     throw new Error(payload?.error ?? "Unable to load inbox buckets.");
   }
 
-  return (await response.json()) as InboxHomepageData;
+  return (await response.json()) as InboxHomepageResponse;
 }
 
 export function InboxDashboard({
@@ -169,15 +180,25 @@ export function InboxDashboard({
   const [isHeroVisible, setIsHeroVisible] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isSorting, setIsSorting] = useState(true);
 
-  async function loadInbox(options?: { silent?: boolean }) {
+  async function loadInbox(options?: { showSuccessToast?: boolean; silent?: boolean }) {
+    setIsSorting(true);
+
     try {
       const payload = await fetchInboxHomepage();
 
       startTransition(() => {
         setErrorMessage(null);
-        setInbox(payload);
+        setInbox(payload.inbox);
       });
+
+      if (options?.showSuccessToast) {
+        showSortingCompleteToast(
+          payload.sorting.sortedEmailCount,
+          payload.sorting.durationMs,
+        );
+      }
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Unable to load inbox buckets.";
@@ -190,6 +211,7 @@ export function InboxDashboard({
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
+      setIsSorting(false);
     }
   }
 
@@ -205,6 +227,8 @@ export function InboxDashboard({
     let isActive = true;
 
     void (async () => {
+      setIsSorting(true);
+
       try {
         const payload = await fetchInboxHomepage();
 
@@ -214,8 +238,13 @@ export function InboxDashboard({
 
         startTransition(() => {
           setErrorMessage(null);
-          setInbox(payload);
+          setInbox(payload.inbox);
         });
+
+        showSortingCompleteToast(
+          payload.sorting.sortedEmailCount,
+          payload.sorting.durationMs,
+        );
       } catch (error) {
         if (!isActive) {
           return;
@@ -232,6 +261,7 @@ export function InboxDashboard({
         }
 
         setIsLoading(false);
+        setIsSorting(false);
       }
     })();
 
@@ -246,7 +276,7 @@ export function InboxDashboard({
     }
 
     setIsRefreshing(true);
-    await loadInbox();
+    await loadInbox({ showSuccessToast: true });
   }
 
   function handleDismissHero() {
@@ -360,16 +390,49 @@ export function InboxDashboard({
       ) : null}
 
       {isLoading ? (
-        <div className="space-y-4">
-          <BucketSkeleton />
-          <BucketSkeleton />
-          <BucketSkeleton />
-          <BucketSkeleton />
-        </div>
+        <section className="rounded-[2rem] border border-white/70 bg-white/88 px-6 py-16 shadow-[0_30px_80px_rgba(15,23,42,0.08)] backdrop-blur">
+          <div className="mx-auto flex max-w-2xl flex-col items-center text-center">
+            <span className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-950 text-white shadow-[0_18px_45px_rgba(15,23,42,0.18)]">
+              <LoaderCircle
+                aria-hidden="true"
+                className="h-6 w-6 animate-spin"
+                strokeWidth={2}
+              />
+            </span>
+            <h2 className="mt-6 text-2xl font-semibold tracking-tight text-slate-950">
+              Sorting your inbox
+            </h2>
+            <p className="mt-3 max-w-xl text-sm leading-7 text-slate-600">
+              Fetching recent emails and grouping them into your configured
+              buckets now.
+            </p>
+          </div>
+        </section>
       ) : null}
 
       {inbox ? (
-        <div className="space-y-4">
+        <div className="relative space-y-4">
+          {isSorting ? (
+            <div className="pointer-events-none absolute inset-0 z-10 rounded-[2rem] bg-white/72 backdrop-blur-[2px]">
+              <div className="flex h-full items-center justify-center p-6">
+                <div className="rounded-[1.5rem] border border-slate-200 bg-white/95 px-6 py-5 text-center shadow-[0_24px_60px_rgba(15,23,42,0.12)]">
+                  <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-slate-950 text-white">
+                    <LoaderCircle
+                      aria-hidden="true"
+                      className="h-5 w-5 animate-spin"
+                      strokeWidth={2}
+                    />
+                  </div>
+                  <p className="mt-4 text-base font-semibold text-slate-950">
+                    Sorting your inbox
+                  </p>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Re-running bucket classification now.
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : null}
           {inbox.buckets.map((bucket) => {
             const tone = getBucketTone(bucket.name);
 

@@ -5,6 +5,7 @@ import { authOptions } from "@/auth";
 import {
   createCustomBucket,
   listBucketSettings,
+  reorderBucketSettings,
 } from "@/lib/inbox/classification";
 
 function getBucketOwner(session: Session | null) {
@@ -104,6 +105,55 @@ export async function POST(request: Request) {
       {
         error:
           error instanceof Error ? error.message : "Unable to create bucket.",
+      },
+      { status: 500 },
+    );
+  }
+}
+
+export async function PATCH(request: Request) {
+  const session = await getServerSession(authOptions);
+  const owner = getBucketOwner(session);
+
+  if (!owner) {
+    return NextResponse.json(
+      {
+        error: "Authentication required.",
+      },
+      { status: 401 },
+    );
+  }
+
+  try {
+    const body = (await request.json()) as {
+      bucketIds?: unknown;
+    };
+
+    if (
+      !Array.isArray(body.bucketIds) ||
+      body.bucketIds.some((bucketId) => typeof bucketId !== "string")
+    ) {
+      return NextResponse.json(
+        {
+          error: "Bucket ids are required.",
+        },
+        { status: 400 },
+      );
+    }
+
+    const buckets = await reorderBucketSettings({
+      bucketIds: body.bucketIds,
+      ownerEmail: owner.email,
+    });
+
+    return NextResponse.json({ buckets });
+  } catch (error) {
+    console.error("Reordering buckets failed", error);
+
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error ? error.message : "Unable to reorder buckets.",
       },
       { status: 500 },
     );

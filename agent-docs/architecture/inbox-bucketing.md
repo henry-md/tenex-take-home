@@ -18,8 +18,9 @@ Make the authenticated homepage inbox-first by loading the latest configured Gma
 
 ## Custom buckets
 
-- Bucket management now lives in Settings through `GET/POST /api/buckets` and `PATCH /api/buckets/[bucketId]`.
+- Bucket management now lives in Settings through `GET/POST/PATCH /api/buckets` and `PATCH /api/buckets/[bucketId]`.
 - Each bucket stores an editable classifier prompt in the bucket `description` field.
+- Settings bucket order is persisted via the bucket `sortOrder` field so drag reordering survives refreshes.
 - Default buckets ship with starter prompts that guide the LLM toward the intended category semantics.
 - Custom buckets are first-class options in the LLM prompt, not post-processing filters.
 
