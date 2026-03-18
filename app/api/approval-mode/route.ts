@@ -26,7 +26,6 @@ export async function GET() {
 
   return NextResponse.json({
     approvalMode: serializeWorkspaceApprovalMode(mode),
-    options: Object.values(WorkspaceApprovalMode).map(serializeWorkspaceApprovalMode),
   });
 }
 
@@ -66,6 +65,5 @@ export async function POST(request: Request) {
 
   return NextResponse.json({
     approvalMode,
-    options: Object.values(WorkspaceApprovalMode).map(serializeWorkspaceApprovalMode),
   });
 }

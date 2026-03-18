@@ -3,11 +3,19 @@ import { getServerSession } from "next-auth";
 import { AuthButton } from "@/app/components/auth-button";
 import { OpenAIChat } from "@/app/components/openai-chat";
 import { authOptions } from "@/auth";
+import {
+  getWorkspaceApprovalMode,
+  serializeWorkspaceApprovalMode,
+} from "@/lib/google-workspace/approval-mode";
 
 export default async function Home() {
   const session = await getServerSession(authOptions);
   const isAuthenticated = Boolean(session?.user);
   const firstName = session?.user?.name?.split(" ")[0];
+  const ownerEmail = session?.user?.email;
+  const approvalMode = ownerEmail
+    ? serializeWorkspaceApprovalMode(await getWorkspaceApprovalMode(ownerEmail))
+    : null;
 
   return (
     <main
@@ -16,8 +24,11 @@ export default async function Home() {
       }`}
     >
       <div className="mx-auto max-w-6xl">
-        {isAuthenticated ? (
-          <OpenAIChat firstName={firstName} />
+        {isAuthenticated && approvalMode ? (
+          <OpenAIChat
+            firstName={firstName}
+            initialApprovalMode={approvalMode}
+          />
         ) : (
           <section className="overflow-hidden rounded-[2rem] border border-white/70 bg-white/80 shadow-[0_30px_80px_rgba(15,23,42,0.12)] backdrop-blur">
             <div className="grid gap-10 px-8 py-10 md:grid-cols-[1.2fr_0.8fr] md:px-12 md:py-12">

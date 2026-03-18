@@ -1,13 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
-type ApprovalModeOption = {
-  description: string;
-  label: string;
-  mode: "BULK_EMAIL_ONLY" | "DANGEROUS" | "SAFE";
-};
+import {
+  APPROVAL_MODE_OPTIONS,
+  type ApprovalModeOption,
+} from "@/lib/google-workspace/approval-mode-options";
 
 type Toast = {
   id: string;
@@ -76,9 +75,14 @@ function getApprovalModeClasses(
   }
 }
 
-export function ApprovalModeSettings() {
-  const [approvalMode, setApprovalMode] = useState<ApprovalModeOption | null>(null);
-  const [approvalModeOptions, setApprovalModeOptions] = useState<ApprovalModeOption[]>([]);
+type ApprovalModeSettingsProps = {
+  initialApprovalMode: ApprovalModeOption;
+};
+
+export function ApprovalModeSettings({
+  initialApprovalMode,
+}: ApprovalModeSettingsProps) {
+  const [approvalMode, setApprovalMode] = useState(initialApprovalMode);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const approvalModeRequestId = useRef(0);
 
@@ -100,44 +104,12 @@ export function ApprovalModeSettings() {
     }, 4000);
   }
 
-  async function loadApprovalMode() {
-    const response = await fetch("/api/approval-mode");
-
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as
-        | {
-            error?: string;
-          }
-        | null;
-
-      throw new Error(payload?.error ?? "Unable to load approval mode.");
-    }
-
-    const payload = (await response.json()) as {
-      approvalMode?: ApprovalModeOption;
-      options?: ApprovalModeOption[];
-    };
-
-    setApprovalMode(payload.approvalMode ?? null);
-    setApprovalModeOptions(payload.options ?? []);
-  }
-
-  const loadInitialData = useEffectEvent(() => {
-    void loadApprovalMode().catch((error) => {
-      showToast(error instanceof Error ? error.message : "Unable to load approval mode.");
-    });
-  });
-
-  useEffect(() => {
-    loadInitialData();
-  }, []);
-
   async function handleApprovalModeChange(mode: ApprovalModeOption["mode"]) {
     const nextMode =
-      approvalModeOptions.find((option) => option.mode === mode) ?? null;
+      APPROVAL_MODE_OPTIONS.find((option) => option.mode === mode) ?? null;
     const previousMode = approvalMode;
 
-    if (!nextMode || previousMode?.mode === mode) {
+    if (!nextMode || previousMode.mode === mode) {
       return;
     }
 
@@ -166,7 +138,6 @@ export function ApprovalModeSettings() {
 
       const payload = (await response.json()) as {
         approvalMode?: ApprovalModeOption;
-        options?: ApprovalModeOption[];
       };
 
       if (approvalModeRequestId.current !== requestId) {
@@ -174,7 +145,6 @@ export function ApprovalModeSettings() {
       }
 
       setApprovalMode(payload.approvalMode ?? nextMode);
-      setApprovalModeOptions(payload.options ?? []);
     } catch (error) {
       if (approvalModeRequestId.current !== requestId) {
         return;
@@ -224,13 +194,13 @@ export function ApprovalModeSettings() {
                 </p>
               </div>
               <div className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.18em] text-slate-600">
-                {approvalMode?.label ?? "Loading mode"}
+                {approvalMode.label}
               </div>
             </div>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              {approvalModeOptions.map((option) => {
-                const isSelected = approvalMode?.mode === option.mode;
+              {APPROVAL_MODE_OPTIONS.map((option) => {
+                const isSelected = approvalMode.mode === option.mode;
                 const classes = getApprovalModeClasses(option.mode, isSelected);
 
                 return (

@@ -1,28 +1,9 @@
 import { WorkspaceApprovalMode } from "@/generated/prisma/client";
+import { getApprovalModeOption } from "@/lib/google-workspace/approval-mode-options";
 import { prisma } from "@/lib/prisma";
 
-export const WORKSPACE_APPROVAL_MODE_METADATA = {
-  [WorkspaceApprovalMode.SAFE]: {
-    description: "All Gmail and Calendar modifications require approval.",
-    label: "Safe mode",
-  },
-  [WorkspaceApprovalMode.BULK_EMAIL_ONLY]: {
-    description:
-      "Only actions that modify or delete more than one email require approval.",
-    label: "Bulk email guard",
-  },
-  [WorkspaceApprovalMode.DANGEROUS]: {
-    description: "No Gmail or Calendar modifications require approval.",
-    label: "Dangerous mode",
-  },
-} as const;
-
 export function serializeWorkspaceApprovalMode(mode: WorkspaceApprovalMode) {
-  return {
-    description: WORKSPACE_APPROVAL_MODE_METADATA[mode].description,
-    label: WORKSPACE_APPROVAL_MODE_METADATA[mode].label,
-    mode,
-  };
+  return getApprovalModeOption(mode);
 }
 
 export async function getWorkspaceApprovalMode(ownerEmail: string) {

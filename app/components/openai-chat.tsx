@@ -1,5 +1,6 @@
 "use client";
 
+import { Settings2 } from "lucide-react";
 import Link from "next/link";
 import {
   FormEvent,
@@ -9,6 +10,7 @@ import {
 } from "react";
 
 import { AuthButton } from "@/app/components/auth-button";
+import { type ApprovalModeOption } from "@/lib/google-workspace/approval-mode-options";
 
 type ChatMessage = {
   content: string;
@@ -29,12 +31,6 @@ type ActionDraft = {
   title: string | null;
 };
 
-type ApprovalModeOption = {
-  description: string;
-  label: string;
-  mode: "BULK_EMAIL_ONLY" | "DANGEROUS" | "SAFE";
-};
-
 type Toast = {
   id: string;
   message: string;
@@ -42,6 +38,7 @@ type Toast = {
 
 type OpenAIChatProps = {
   firstName?: string;
+  initialApprovalMode: ApprovalModeOption;
 };
 
 function extractLabelName(summary: string) {
@@ -89,7 +86,10 @@ function getDraftScopeLabel(draft: ActionDraft) {
   return draft.provider === "GMAIL" ? "Gmail" : "Calendar";
 }
 
-export function OpenAIChat({ firstName }: OpenAIChatProps) {
+export function OpenAIChat({
+  firstName,
+  initialApprovalMode,
+}: OpenAIChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "assistant-intro",
@@ -98,7 +98,7 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
     },
   ]);
   const [drafts, setDrafts] = useState<ActionDraft[]>([]);
-  const [approvalMode, setApprovalMode] = useState<ApprovalModeOption | null>(null);
+  const [approvalMode] = useState(initialApprovalMode);
   const [input, setInput] = useState("");
   const [isLoadingDrafts, setIsLoadingDrafts] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -164,39 +164,8 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
     }
   }
 
-  async function loadApprovalMode() {
-    try {
-      const response = await fetch("/api/approval-mode");
-
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as
-          | {
-              error?: string;
-            }
-          | null;
-
-        throw new Error(payload?.error ?? "Unable to load approval mode.");
-      }
-
-      const payload = (await response.json()) as {
-        approvalMode?: ApprovalModeOption;
-      };
-
-      setApprovalMode(payload.approvalMode ?? null);
-    } catch (loadError) {
-      const message =
-        loadError instanceof Error
-          ? loadError.message
-          : "Unable to load approval mode.";
-
-      setError(message);
-      showToast(message);
-    }
-  }
-
   const loadInitialData = useEffectEvent(() => {
     void loadDrafts();
-    void loadApprovalMode();
   });
 
   useEffect(() => {
@@ -324,26 +293,14 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
           </div>
           <div className="flex items-center gap-3 self-start">
             <div className="rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-medium uppercase tracking-[0.2em] text-emerald-700">
-              {approvalMode?.label ?? "Loading mode"}
+              {approvalMode.label}
             </div>
             <Link
               aria-label="Open settings"
               className="flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
               href="/settings"
             >
-              <svg
-                aria-hidden="true"
-                className="block h-5 w-5"
-                fill="none"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="1.75"
-                viewBox="0 0 24 24"
-              >
-                <path d="M10.5 4.5c.5-1 1.9-1 2.4 0l.8 1.6c.2.4.6.7 1.1.8l1.7.3c1.1.2 1.5 1.6.8 2.4l-1.2 1.2c-.3.3-.4.8-.3 1.2l.3 1.7c.2 1.1-.9 2-1.9 1.5l-1.6-.8c-.4-.2-.9-.2-1.3 0l-1.6.8c-1 .5-2.1-.4-1.9-1.5l.3-1.7c.1-.4 0-.9-.3-1.2L6.7 9.6c-.7-.8-.3-2.2.8-2.4l1.7-.3c.4-.1.8-.4 1.1-.8l.8-1.6Z" />
-                <path d="M12 9.25a2.75 2.75 0 1 0 0 5.5a2.75 2.75 0 0 0 0-5.5Z" />
-              </svg>
+              <Settings2 aria-hidden="true" className="h-[18px] w-[18px]" strokeWidth={1.9} />
             </Link>
             <AuthButton className="px-4 py-2.5 text-sm" isAuthenticated />
           </div>
@@ -394,8 +351,7 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
                 />
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs text-slate-500">
-                    {approvalMode?.description ??
-                      "The assistant can read Google data directly and will follow your selected approval policy for changes."}
+                    {approvalMode.description}
                   </p>
                   <button
                     className="rounded-full bg-slate-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
