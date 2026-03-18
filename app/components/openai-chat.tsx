@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { toast } from "sonner";
 import {
   FormEvent,
@@ -60,6 +62,7 @@ type ToolCallSummary = {
 
 type EmailResult = {
   body: string;
+  bodyHtml?: string;
   lastMessageAt: string | null;
   sender: string | null;
   snippet: string;
@@ -207,24 +210,124 @@ function getMessageEmailResults(message: ChatMessage) {
   return emailResults.slice(0, displayDirective.maxCount);
 }
 
-const EMAIL_BODY_PREVIEW_LENGTH = 280;
+const EMAIL_BODY_SANITIZE_SCHEMA = {
+  ...defaultSchema,
+  attributes: {
+    ...defaultSchema.attributes,
+    a: [...(defaultSchema.attributes?.a ?? []), "href", "rel", "target"],
+    td: [...(defaultSchema.attributes?.td ?? []), "colspan", "rowspan"],
+    th: [...(defaultSchema.attributes?.th ?? []), "colspan", "rowspan"],
+  },
+  tagNames: [
+    ...(defaultSchema.tagNames ?? []),
+    "div",
+    "hr",
+    "section",
+    "span",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "tr",
+  ],
+};
 
 function getEmailBodyText(email: EmailResult) {
   return email.body.trim() || email.snippet.trim();
 }
 
-function EmailResultCard({ email }: { email: EmailResult }) {
-  const [isBodyExpanded, setIsBodyExpanded] = useState(false);
+function normalizeEmailTextForComparison(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function hasRenderedEmailBody(email: EmailResult) {
+  if (email.bodyHtml?.trim()) {
+    return true;
+  }
+
   const bodyText = getEmailBodyText(email);
-  const hasLongBody = bodyText.length > EMAIL_BODY_PREVIEW_LENGTH;
-  const displayedBody =
-    !hasLongBody || isBodyExpanded
-      ? bodyText
-      : `${bodyText.slice(0, EMAIL_BODY_PREVIEW_LENGTH).trimEnd()}…`;
+
+  if (!bodyText) {
+    return false;
+  }
 
   return (
-    <details className="group overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
-      <summary className="cursor-pointer list-none px-4 py-3 transition hover:bg-slate-100 [&::-webkit-details-marker]:hidden">
+    normalizeEmailTextForComparison(bodyText) !==
+    normalizeEmailTextForComparison(email.snippet)
+  );
+}
+
+function EmailBodyContent({ email }: { email: EmailResult }) {
+  if (email.bodyHtml?.trim()) {
+    return (
+      <div className="space-y-3 break-words text-sm leading-7 text-slate-700">
+        <ReactMarkdown
+          components={{
+            a: ({ children, href }) => (
+              <a
+                className="font-medium text-slate-900 underline decoration-slate-300 underline-offset-2 transition hover:text-slate-700"
+                href={href}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {children}
+              </a>
+            ),
+            blockquote: ({ children }) => (
+              <blockquote className="border-l-2 border-slate-200 pl-4 italic text-slate-600">
+                {children}
+              </blockquote>
+            ),
+            li: ({ children }) => (
+              <li className="ml-5 list-disc whitespace-pre-wrap">{children}</li>
+            ),
+            ol: ({ children }) => <ol className="space-y-1">{children}</ol>,
+            p: ({ children }) => <p className="whitespace-pre-wrap">{children}</p>,
+            strong: ({ children }) => (
+              <strong className="font-semibold text-slate-950">{children}</strong>
+            ),
+            table: ({ children }) => (
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="min-w-full border-collapse text-left text-sm">
+                  {children}
+                </table>
+              </div>
+            ),
+            td: ({ children }) => (
+              <td className="border-t border-slate-200 px-3 py-2 align-top">
+                {children}
+              </td>
+            ),
+            th: ({ children }) => (
+              <th className="bg-slate-50 px-3 py-2 font-semibold text-slate-900">
+                {children}
+              </th>
+            ),
+            ul: ({ children }) => <ul className="space-y-1">{children}</ul>,
+          }}
+          rehypePlugins={[rehypeRaw, [rehypeSanitize, EMAIL_BODY_SANITIZE_SCHEMA]]}
+        >
+          {email.bodyHtml}
+        </ReactMarkdown>
+      </div>
+    );
+  }
+
+  return (
+    <p className="whitespace-pre-wrap break-words text-sm leading-7 text-slate-700">
+      {getEmailBodyText(email)}
+    </p>
+  );
+}
+
+function EmailResultCard({ email }: { email: EmailResult }) {
+  const showsBody = hasRenderedEmailBody(email);
+
+  return (
+    <details className="group overflow-hidden rounded-[1.35rem] border border-slate-300/90 bg-white shadow-[0_18px_44px_rgba(15,23,42,0.08)]">
+      <summary className="cursor-pointer list-none bg-[linear-gradient(180deg,rgba(248,250,252,0.96),rgba(255,255,255,0.98))] px-4 py-3.5 transition hover:bg-slate-50 [&::-webkit-details-marker]:hidden">
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-start gap-2">
             <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500">
@@ -235,11 +338,17 @@ function EmailResultCard({ email }: { email: EmailResult }) {
               />
             </span>
             <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                Email
+              </p>
               <p className="truncate text-sm font-semibold text-slate-900">
                 {email.subject}
               </p>
               <p className="truncate text-xs text-slate-500">
                 {email.sender ?? "Unknown sender"}
+              </p>
+              <p className="truncate text-sm text-slate-500">
+                {email.snippet || "No message preview available."}
               </p>
             </div>
           </div>
@@ -248,23 +357,23 @@ function EmailResultCard({ email }: { email: EmailResult }) {
           </p>
         </div>
       </summary>
-      <div className="border-t border-slate-200 px-4 py-3 text-sm leading-6 text-slate-600">
-        <p className="whitespace-pre-wrap">
-          {displayedBody || "No message preview available."}
-        </p>
-        {hasLongBody ? (
-          <button
-            className="mt-3 text-xs font-medium text-slate-500 transition hover:text-slate-700"
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              setIsBodyExpanded((current) => !current);
-            }}
-            type="button"
-          >
-            {isBodyExpanded ? "Show less" : "See more"}
-          </button>
-        ) : null}
+      <div className="border-t border-slate-200 bg-[linear-gradient(180deg,rgba(248,250,252,0.85),rgba(241,245,249,0.55))] p-4">
+        <div className="overflow-hidden rounded-[1.1rem] border border-slate-200 bg-white">
+          <div className="border-b border-slate-200 px-4 py-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+              Message body
+            </p>
+          </div>
+          <div className="max-h-[28rem] overflow-y-auto px-4 py-4">
+            {showsBody ? (
+              <EmailBodyContent email={email} />
+            ) : (
+              <p className="text-sm leading-7 text-slate-500">
+                No additional message body is available beyond the preview.
+              </p>
+            )}
+          </div>
+        </div>
       </div>
     </details>
   );
@@ -773,13 +882,20 @@ export function OpenAIChat({
                   <p className="whitespace-pre-wrap break-words">{message.content}</p>
                 )}
                 {getMessageEmailResults(message).length ? (
-                  <div className="mt-3 space-y-2">
-                    {getMessageEmailResults(message).map((email) => (
-                      <EmailResultCard
-                        key={`${message.id}-${email.threadId}`}
-                        email={email}
-                      />
-                    ))}
+                  <div className="mt-4 rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)]">
+                    <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                      {getMessageEmailResults(message).length === 1
+                        ? "Email result"
+                        : "Email results"}
+                    </p>
+                    <div className="space-y-3">
+                      {getMessageEmailResults(message).map((email) => (
+                        <EmailResultCard
+                          key={`${message.id}-${email.threadId}`}
+                          email={email}
+                        />
+                      ))}
+                    </div>
                   </div>
                 ) : null}
                 {message.role === "assistant" && message.toolCalls?.length ? (

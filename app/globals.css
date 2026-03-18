@@ -27,8 +27,9 @@ body {
 
 .details-chevron {
   transition: transform 200ms;
+  transform-origin: center;
 }
 
-details[open] .details-chevron {
+details[open] > summary .details-chevron {
   transform: rotate(90deg);
 }

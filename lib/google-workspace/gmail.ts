@@ -83,6 +83,7 @@ type EmailDraftRecordInput = {
 
 export type EmailThreadSummary = {
   body: string;
+  bodyHtml?: string;
   id: string;
   labelIds: string[];
   lastMessageAt: string | null;
@@ -139,7 +140,14 @@ function normalizeEmailText(value: string) {
     .trim();
 }
 
-function decodeMessagePartBody(part: { body?: { data?: string } }) {
+function normalizeHtmlBody(value: string) {
+  return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
+}
+
+function decodeMessagePartBody(
+  part: { body?: { data?: string } },
+  options?: { preserveFormatting?: boolean },
+) {
   const encodedBody = part.body?.data;
 
   if (!encodedBody) {
@@ -147,7 +155,11 @@ function decodeMessagePartBody(part: { body?: { data?: string } }) {
   }
 
   try {
-    return normalizeEmailText(decodeBase64Url(encodedBody));
+    const decodedBody = decodeBase64Url(encodedBody);
+
+    return options?.preserveFormatting
+      ? normalizeHtmlBody(decodedBody)
+      : normalizeEmailText(decodedBody);
   } catch {
     return "";
   }
@@ -183,7 +195,9 @@ function extractPayloadBodies(
       plainBodies: [],
     },
   );
-  const body = decodeMessagePartBody(payload);
+  const body = decodeMessagePartBody(payload, {
+    preserveFormatting: payload.mimeType === "text/html",
+  });
 
   if (!body) {
     return nestedBodies;
@@ -206,17 +220,22 @@ function extractPayloadBodies(
   return nestedBodies;
 }
 
-function getMessageBody(payload?: GmailMessage["payload"]) {
+function getMessageBodyContent(payload?: GmailMessage["payload"]) {
   const { htmlBodies, plainBodies } = extractPayloadBodies(payload);
   const plainText = plainBodies.find((body) => body.length);
-
-  if (plainText) {
-    return plainText;
-  }
-
   const htmlText = htmlBodies.find((body) => body.length);
 
-  return htmlText ? normalizeEmailText(stripHtml(htmlText)) : "";
+  if (plainText) {
+    return {
+      htmlBody: htmlText || undefined,
+      textBody: plainText,
+    };
+  }
+
+  return {
+    htmlBody: htmlText || undefined,
+    textBody: htmlText ? normalizeEmailText(stripHtml(htmlText)) : "",
+  };
 }
 
 function getMostRecentMessage(messages: GmailMessage[] | undefined) {
@@ -254,11 +273,12 @@ function summarizeThread(thread: GmailThreadResponse): EmailThreadSummary {
     },
     null,
   );
-  const body = getMessageBody(primaryMessage?.payload);
+  const { htmlBody, textBody } = getMessageBodyContent(primaryMessage?.payload);
   const normalizedSnippet = normalizeEmailText(thread.snippet ?? "");
 
   return {
-    body,
+    body: textBody,
+    bodyHtml: htmlBody,
     id: thread.id,
     labelIds,
     lastMessageAt: mostRecentInternalDate
@@ -266,7 +286,7 @@ function summarizeThread(thread: GmailThreadResponse): EmailThreadSummary {
       : null,
     sender: getHeaderValue(primaryMessage?.payload?.headers, "from"),
     snippet:
-      normalizedSnippet || body.split("\n").join(" ").slice(0, 220).trim(),
+      normalizedSnippet || textBody.split("\n").join(" ").slice(0, 220).trim(),
     subject:
       getHeaderValue(primaryMessage?.payload?.headers, "subject") ?? "(No subject)",
   };

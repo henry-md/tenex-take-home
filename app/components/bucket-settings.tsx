@@ -11,16 +11,24 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/app/components/ui/alert-dialog";
-import { GripVertical, Plus, Save } from "lucide-react";
+import { GripVertical, Plus, Save, Trash2 } from "lucide-react";
 import {
   type DragEvent,
+  type PointerEvent as ReactPointerEvent,
   type TextareaHTMLAttributes,
   useEffect,
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import { toast } from "sonner";
 
+import {
+  clearCachedInbox,
+  INBOX_PENDING_SORT_REASON_STORAGE_KEY,
+  readCachedInboxesFromStorage,
+  writeCachedInboxToStorage,
+} from "@/app/components/inbox-dashboard-storage";
 import type { BucketSetting } from "@/lib/inbox/classification";
 
 type BucketSettingsProps = {
@@ -28,8 +36,6 @@ type BucketSettingsProps = {
   initialBuckets: BucketSetting[];
   showDebugCacheControls: boolean;
 };
-
-const INBOX_PENDING_SORT_REASON_STORAGE_KEY = "inbox-dashboard-pending-sort-reason";
 
 function resizeTextarea(element: HTMLTextAreaElement) {
   element.style.height = "0px";
@@ -95,11 +101,32 @@ function isDragExemptTarget(target: EventTarget | null) {
   );
 }
 
-function isDragHandleTarget(target: EventTarget | null) {
-  return (
-    target instanceof HTMLElement &&
-    Boolean(target.closest('[data-drag-handle="true"]'))
+function syncCachedInboxBucketOrder(buckets: BucketSetting[]) {
+  const cachedInboxes = readCachedInboxesFromStorage();
+
+  if (cachedInboxes.length === 0) {
+    return;
+  }
+
+  const bucketIdsInOrder = new Map(
+    buckets.map((bucket, index) => [bucket.id, index]),
   );
+
+  for (const cachedInbox of cachedInboxes) {
+    writeCachedInboxToStorage({
+      ...cachedInbox,
+      buckets: [...cachedInbox.buckets].sort((left, right) => {
+        const leftIndex = bucketIdsInOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER;
+        const rightIndex = bucketIdsInOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER;
+
+        if (leftIndex !== rightIndex) {
+          return leftIndex - rightIndex;
+        }
+
+        return left.name.localeCompare(right.name);
+      }),
+    });
+  }
 }
 
 export function BucketSettings({
@@ -117,15 +144,24 @@ export function BucketSettings({
   const [hasInboxCache, setHasInboxCache] = useState(initialHasInboxCache);
   const [isInvalidatingCache, setIsInvalidatingCache] = useState(false);
   const [isReorderingBuckets, setIsReorderingBuckets] = useState(false);
+  const [isResettingDefaults, setIsResettingDefaults] = useState(false);
   const [savingBucketId, setSavingBucketId] = useState<string | null>(null);
+  const [deletingBucketId, setDeletingBucketId] = useState<string | null>(null);
   const [draggingBucketId, setDraggingBucketId] = useState<string | null>(null);
   const [dropTargetBucketId, setDropTargetBucketId] = useState<string | null>(null);
+  const [armedDragBucketId, setArmedDragBucketId] = useState<string | null>(null);
 
   function syncBuckets(nextBuckets: BucketSetting[]) {
     setBuckets(nextBuckets);
     setDraftPrompts(
       Object.fromEntries(nextBuckets.map((bucket) => [bucket.id, bucket.prompt])),
     );
+  }
+
+  function clearLocalInboxState() {
+    clearCachedInbox();
+    window.localStorage.removeItem(INBOX_PENDING_SORT_REASON_STORAGE_KEY);
+    setHasInboxCache(false);
   }
 
   async function persistBucketOrder(
@@ -160,6 +196,7 @@ export function BucketSettings({
         buckets: BucketSetting[];
       };
 
+      syncCachedInboxBucketOrder(payload.buckets);
       setBuckets(payload.buckets);
     } catch (error) {
       setBuckets(previousBuckets);
@@ -174,7 +211,12 @@ export function BucketSettings({
   async function handleCreateBucket() {
     const trimmedName = newBucketName.trim();
 
-    if (!trimmedName || isCreatingBucket) {
+    if (
+      !trimmedName ||
+      isCreatingBucket ||
+      deletingBucketId ||
+      isResettingDefaults
+    ) {
       return;
     }
 
@@ -230,7 +272,7 @@ export function BucketSettings({
   }
 
   async function handleSavePrompt(bucketId: string) {
-    if (savingBucketId) {
+    if (savingBucketId || deletingBucketId || isResettingDefaults) {
       return;
     }
 
@@ -272,7 +314,7 @@ export function BucketSettings({
   }
 
   async function handleInvalidateCache() {
-    if (isInvalidatingCache) {
+    if (isInvalidatingCache || deletingBucketId || isResettingDefaults) {
       return;
     }
 
@@ -307,7 +349,7 @@ export function BucketSettings({
   }
 
   function handleDragStart(bucketId: string) {
-    if (isReorderingBuckets) {
+    if (isReorderingBuckets || deletingBucketId || isResettingDefaults) {
       return;
     }
 
@@ -321,9 +363,15 @@ export function BucketSettings({
   ) {
     if (
       isReorderingBuckets ||
-      isDragExemptTarget(event.target) ||
-      !isDragHandleTarget(event.target)
+      deletingBucketId ||
+      isResettingDefaults ||
+      isDragExemptTarget(event.target)
     ) {
+      event.preventDefault();
+      return;
+    }
+
+    if (armedDragBucketId !== bucketId) {
       event.preventDefault();
       return;
     }
@@ -340,6 +388,21 @@ export function BucketSettings({
     );
 
     handleDragStart(bucketId);
+  }
+
+  function handleCardPointerDown(
+    event: ReactPointerEvent<HTMLElement>,
+    bucketId: string,
+  ) {
+    if (isReorderingBuckets || deletingBucketId || isResettingDefaults) {
+      return;
+    }
+
+    flushSync(() => {
+      setArmedDragBucketId(
+        isDragExemptTarget(event.target) ? null : bucketId,
+      );
+    });
   }
 
   function handleDragOver(event: DragEvent<HTMLElement>, bucketId: string) {
@@ -375,8 +438,107 @@ export function BucketSettings({
   }
 
   function handleDragEnd() {
+    setArmedDragBucketId(null);
     setDraggingBucketId(null);
     setDropTargetBucketId(null);
+  }
+
+  async function handleDeleteBucket(bucket: BucketSetting) {
+    if (
+      deletingBucketId ||
+      isResettingDefaults ||
+      isCreatingBucket ||
+      savingBucketId ||
+      isReorderingBuckets ||
+      isInvalidatingCache
+    ) {
+      return;
+    }
+
+    setDeletingBucketId(bucket.id);
+
+    try {
+      const response = await fetch(`/api/buckets/${bucket.id}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as
+          | {
+              error?: string;
+            }
+          | null;
+
+        throw new Error(payload?.error ?? "Unable to delete bucket.");
+      }
+
+      const payload = (await response.json()) as {
+        buckets: BucketSetting[];
+      };
+
+      clearLocalInboxState();
+      setArmedDragBucketId(null);
+      setDraggingBucketId(null);
+      setDropTargetBucketId(null);
+      syncBuckets(payload.buckets);
+      toast.success(`Deleted ${bucket.name}.`);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Unable to delete bucket.",
+      );
+    } finally {
+      setDeletingBucketId(null);
+    }
+  }
+
+  async function handleResetDefaults() {
+    if (
+      isResettingDefaults ||
+      deletingBucketId ||
+      isCreatingBucket ||
+      savingBucketId ||
+      isReorderingBuckets ||
+      isInvalidatingCache
+    ) {
+      return;
+    }
+
+    setIsResettingDefaults(true);
+
+    try {
+      const response = await fetch("/api/buckets/reset", {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as
+          | {
+              error?: string;
+            }
+          | null;
+
+        throw new Error(payload?.error ?? "Unable to reset default buckets.");
+      }
+
+      const payload = (await response.json()) as {
+        buckets: BucketSetting[];
+      };
+
+      clearLocalInboxState();
+      setArmedDragBucketId(null);
+      setDraggingBucketId(null);
+      setDropTargetBucketId(null);
+      syncBuckets(payload.buckets);
+      toast.success("Restored the stock bucket set.");
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Unable to reset default buckets.",
+      );
+    } finally {
+      setIsResettingDefaults(false);
+    }
   }
 
   return (
@@ -390,12 +552,39 @@ export function BucketSettings({
             Classification prompts
           </h2>
           <p className="mt-2 text-sm leading-6 text-slate-600">
-            Each bucket has an editable prompt that is passed into the inbox
-            classifier. Keep prompts short and specific so the model can decide
-            clearly when the bucket applies, even if a thread also belongs in
-            other buckets.
+            Shape the taxonomy however you want. Add, rewrite, reorder, delete,
+            and, if needed, restore the stock bucket set as a starting point.
           </p>
         </div>
+
+        <section className="rounded-[1.5rem] border border-slate-200 bg-[linear-gradient(180deg,rgba(248,250,252,0.96),rgba(241,245,249,0.92))] p-5">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div className="max-w-2xl">
+              <h3 className="text-lg font-semibold text-slate-950">
+                Reset stock buckets
+              </h3>
+              <p className="mt-1 text-sm leading-6 text-slate-600">
+                Recreate the current built-in bucket set and restore their
+                starter prompts. Any custom buckets you made stay in place.
+              </p>
+            </div>
+            <button
+              className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white px-5 py-2.5 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+              disabled={
+                isResettingDefaults ||
+                Boolean(deletingBucketId) ||
+                isCreatingBucket ||
+                Boolean(savingBucketId) ||
+                isReorderingBuckets ||
+                isInvalidatingCache
+              }
+              onClick={() => void handleResetDefaults()}
+              type="button"
+            >
+              {isResettingDefaults ? "Resetting..." : "Reset to defaults"}
+            </button>
+          </div>
+        </section>
 
         <section className="rounded-[1.5rem] border border-slate-200 bg-[linear-gradient(180deg,rgba(249,250,251,0.96),rgba(244,247,250,0.92))] p-5">
           <div className="flex flex-col gap-4">
@@ -416,7 +605,12 @@ export function BucketSettings({
               />
               <button
                 className="inline-flex items-center justify-center gap-2 rounded-[1rem] bg-slate-950 px-4 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
-                disabled={!newBucketName.trim() || isCreatingBucket}
+                disabled={
+                  !newBucketName.trim() ||
+                  isCreatingBucket ||
+                  isResettingDefaults ||
+                  Boolean(deletingBucketId)
+                }
                 onClick={() => void handleCreateBucket()}
                 type="button"
               >
@@ -444,9 +638,19 @@ export function BucketSettings({
                     ? "border-slate-400 shadow-[0_20px_45px_rgba(15,23,42,0.12)]"
                     : "border-slate-200"
                 } ${isDragging ? "opacity-55" : ""} select-none`}
-                draggable={!isReorderingBuckets}
+                draggable={
+                  !isReorderingBuckets &&
+                  !isResettingDefaults &&
+                  !deletingBucketId &&
+                  armedDragBucketId === bucket.id
+                }
                 onDragEnd={handleDragEnd}
                 onDragOver={(event) => handleDragOver(event, bucket.id)}
+                onPointerCancelCapture={() => setArmedDragBucketId(null)}
+                onPointerDownCapture={(event) =>
+                  handleCardPointerDown(event, bucket.id)
+                }
+                onPointerUpCapture={() => setArmedDragBucketId(null)}
                 onDragStart={(event) => handleCardDragStart(event, bucket.id)}
                 onDrop={(event) => void handleDrop(event, bucket.id)}
               >
@@ -465,24 +669,78 @@ export function BucketSettings({
                       <h3 className="text-base font-semibold text-slate-950">
                         {bucket.name}
                       </h3>
-                      <span className="rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-600">
-                        {bucket.isCustom ? "Custom" : "Default"}
-                      </span>
                     </div>
                     <p className="mt-1 text-sm text-slate-500">
                       Prompt used by the classifier for this bucket.
                     </p>
                   </div>
-                  <button
-                    className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
-                    data-drag-exempt="true"
-                    disabled={!isDirty || isSaving || isReorderingBuckets}
-                    onClick={() => void handleSavePrompt(bucket.id)}
-                    type="button"
-                  >
-                    <Save aria-hidden="true" className="h-4 w-4" strokeWidth={2} />
-                    {isSaving ? "Saving..." : "Save"}
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <button
+                          aria-label={
+                            deletingBucketId === bucket.id
+                              ? `Deleting ${bucket.name}`
+                              : `Delete ${bucket.name}`
+                          }
+                          className="flex h-10 w-10 items-center justify-center rounded-full border border-rose-200 bg-rose-50 text-rose-700 transition hover:border-rose-300 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          data-drag-exempt="true"
+                          disabled={
+                            Boolean(deletingBucketId) ||
+                            isReorderingBuckets ||
+                            isResettingDefaults ||
+                            isCreatingBucket ||
+                            Boolean(savingBucketId) ||
+                            isInvalidatingCache
+                          }
+                          type="button"
+                        >
+                          <Trash2
+                            aria-hidden="true"
+                            className="h-4 w-4"
+                            strokeWidth={2}
+                          />
+                        </button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Delete {bucket.name}?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This removes the bucket and clears the saved inbox
+                            classification state so the next inbox load can
+                            re-sort emails against your remaining buckets.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel disabled={deletingBucketId === bucket.id}>
+                            Cancel
+                          </AlertDialogCancel>
+                          <AlertDialogAction
+                            disabled={deletingBucketId === bucket.id}
+                            onClick={() => void handleDeleteBucket(bucket)}
+                          >
+                            Delete bucket
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                    <button
+                      className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+                      data-drag-exempt="true"
+                      disabled={
+                        !isDirty ||
+                        isSaving ||
+                        isReorderingBuckets ||
+                        isResettingDefaults ||
+                        Boolean(deletingBucketId)
+                      }
+                      onClick={() => void handleSavePrompt(bucket.id)}
+                      type="button"
+                    >
+                      <Save aria-hidden="true" className="h-4 w-4" strokeWidth={2} />
+                      {isSaving ? "Saving..." : "Save"}
+                    </button>
+                  </div>
                 </div>
 
                 <AutoResizeTextarea

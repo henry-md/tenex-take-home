@@ -7,7 +7,7 @@ Make the authenticated homepage inbox-first by loading the latest configured Gma
 ## Main flow
 
 1. `GET /api/inbox` authenticates the Google session and loads the owner identity.
-2. `lib/inbox/classification.ts` ensures the owner's default bucket taxonomy exists in Prisma.
+2. `lib/inbox/classification.ts` loads the owner's current bucket taxonomy from Prisma.
 3. The server stores one active inbox-state payload per owner in `InboxClassificationCache` instead of caching only a rendered board.
 4. That payload keeps the ordered inbox thread ids, normalized cached thread snapshots, and per-thread/per-bucket membership decisions.
 5. Deterministic heuristics classify obvious newsletters, finance mail, auto-archive candidates, important threads, and personal mail first, but those heuristic matches are additive rather than exclusive.
@@ -18,12 +18,14 @@ Make the authenticated homepage inbox-first by loading the latest configured Gma
 
 ## Custom buckets
 
-- Bucket management now lives in Settings through `GET/POST/PATCH /api/buckets` and `PATCH /api/buckets/[bucketId]`.
+- Bucket management now lives in Settings through `GET/POST/PATCH /api/buckets`, `POST /api/buckets/reset`, and `PATCH/DELETE /api/buckets/[bucketId]`.
 - Each bucket stores an editable classifier prompt in the bucket `description` field.
 - Settings bucket order is persisted via the bucket `sortOrder` field so drag reordering survives refreshes.
-- Default buckets ship with starter prompts that guide the LLM toward the intended category semantics.
+- The stock bucket set ships with starter prompts that guide the LLM toward the intended category semantics.
 - Custom buckets are first-class options in the LLM prompt, not post-processing filters.
 - Adding or editing one bucket no longer forces the server to re-fetch Gmail or reclassify every bucket for every cached thread.
+- Deleting any bucket clears the saved inbox classification cache so the next inbox load can recompute memberships against the remaining taxonomy.
+- Stock buckets are no longer auto-recreated on read. They come back only when the user explicitly resets the bucket set.
 
 ## UI boundary
 

@@ -76,6 +76,7 @@ function parseToolCalls(value: unknown): ToolCallSummary[] | undefined {
 
                 const candidate = entry as {
                   body?: unknown;
+                  bodyHtml?: unknown;
                   lastMessageAt?: unknown;
                   sender?: unknown;
                   snippet?: unknown;
@@ -97,6 +98,11 @@ function parseToolCalls(value: unknown): ToolCallSummary[] | undefined {
                       typeof candidate.body === "string" && candidate.body.trim().length
                         ? candidate.body
                         : candidate.snippet,
+                    bodyHtml:
+                      typeof candidate.bodyHtml === "string" &&
+                      candidate.bodyHtml.trim().length
+                        ? candidate.bodyHtml
+                        : undefined,
                     lastMessageAt:
                       typeof candidate.lastMessageAt === "string"
                         ? candidate.lastMessageAt
@@ -195,6 +201,7 @@ function parseEmailResults(value: unknown): EmailToolResult[] | undefined {
 
     const candidate = entry as {
       body?: unknown;
+      bodyHtml?: unknown;
       lastMessageAt?: unknown;
       sender?: unknown;
       snippet?: unknown;
@@ -216,6 +223,10 @@ function parseEmailResults(value: unknown): EmailToolResult[] | undefined {
           typeof candidate.body === "string" && candidate.body.trim().length
             ? candidate.body
             : candidate.snippet,
+        bodyHtml:
+          typeof candidate.bodyHtml === "string" && candidate.bodyHtml.trim().length
+            ? candidate.bodyHtml
+            : undefined,
         lastMessageAt:
           typeof candidate.lastMessageAt === "string" ? candidate.lastMessageAt : null,
         sender: typeof candidate.sender === "string" ? candidate.sender : null,

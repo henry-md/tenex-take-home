@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   useEffect,
   useEffectEvent,
@@ -15,6 +16,13 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import {
+  clearPendingInboxRefresh,
+  INBOX_PENDING_SORT_REASON_STORAGE_KEY,
+  readCachedInboxFromStorage,
+  readPendingInboxRefresh,
+  writeCachedInboxToStorage,
+} from "@/app/components/inbox-dashboard-storage";
 import type {
   InboxHomepageData,
   InboxThreadItem,
@@ -66,8 +74,6 @@ const BUCKET_TONES: Record<string, BucketTone> = {
 
 const INBOX_LOAD_TOAST_DURATION_MS = 120_000;
 const INBOX_STATUS_POLL_INTERVAL_MS = 60_000;
-const INBOX_CACHE_STORAGE_KEY = "inbox-dashboard-cache";
-const INBOX_PENDING_SORT_REASON_STORAGE_KEY = "inbox-dashboard-pending-sort-reason";
 const PENDING_SORT_REASON_MAX_AGE_MS = 10 * 60 * 1000;
 
 type PersistedPendingSortReason = {
@@ -173,33 +179,6 @@ type ActiveSyncIndicator =
       kind: "new-email";
     };
 
-function readCachedInboxFromStorage() {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  const rawValue = window.localStorage.getItem(INBOX_CACHE_STORAGE_KEY);
-
-  if (!rawValue) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(rawValue) as InboxHomepageData;
-  } catch {
-    window.localStorage.removeItem(INBOX_CACHE_STORAGE_KEY);
-    return null;
-  }
-}
-
-function writeCachedInboxToStorage(inbox: InboxHomepageData) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  window.localStorage.setItem(INBOX_CACHE_STORAGE_KEY, JSON.stringify(inbox));
-}
-
 function readPendingSortReason() {
   if (typeof window === "undefined") {
     return null;
@@ -291,7 +270,7 @@ async function fetchInboxHomepage(options?: { refresh?: boolean }) {
   const response = await fetch(
     `/api/inbox${searchParams.size ? `?${searchParams.toString()}` : ""}`,
     {
-    cache: "no-store",
+      cache: "no-store",
     },
   );
 
@@ -330,7 +309,9 @@ export function InboxDashboard({
   firstName,
   initialInboxThreadLimit,
 }: InboxDashboardProps) {
+  const forceInitialRefreshRef = useRef(false);
   const initialLoadStartedRef = useRef(false);
+  const initialInboxThreadLimitRef = useRef(initialInboxThreadLimit);
   const initialBackgroundSyncStartedRef = useRef(false);
   const isMountedRef = useRef(true);
   const hydratedFromStorageRef = useRef(false);
@@ -379,6 +360,7 @@ export function InboxDashboard({
       loadedCachedSnapshotRef.current = payload.gmailFetch.durationMs === 0;
       setInbox(payload.inbox);
       writeCachedInboxToStorage(payload.inbox);
+      clearPendingInboxRefresh();
 
       if (options?.showSuccessToast) {
         showInboxLoadToasts(payload);
@@ -404,7 +386,6 @@ export function InboxDashboard({
       setIsLoading(false);
       setActiveSyncIndicator(null);
       clearPendingSortReason();
-
       if (options?.showSortingOverlay ?? true) {
         setIsSorting(false);
       }
@@ -464,9 +445,14 @@ export function InboxDashboard({
   useEffect(() => {
     isMountedRef.current = true;
 
-    const cachedInbox = readCachedInboxFromStorage();
+    const pendingInboxRefresh = readPendingInboxRefresh();
+    const cachedInbox = readCachedInboxFromStorage(
+      pendingInboxRefresh?.configuredThreadLimit ??
+        initialInboxThreadLimitRef.current,
+    );
     const storedValue = window.localStorage.getItem("inbox-dashboard-hero-hidden");
     const pendingSortReason = readPendingSortReason();
+    forceInitialRefreshRef.current = Boolean(pendingInboxRefresh);
 
     if (cachedInbox) {
       hydratedFromStorageRef.current = true;
@@ -502,6 +488,7 @@ export function InboxDashboard({
 
     void loadInbox({
       isInitialLoad: true,
+      refresh: forceInitialRefreshRef.current,
       showSuccessToast: true,
       showSortingOverlay: !hydratedFromStorageRef.current,
       silent: true,
@@ -696,6 +683,26 @@ export function InboxDashboard({
               </div>
             </section>
           ) : null}
+          {!inbox.buckets.length ? (
+            <section className="rounded-[1.75rem] border border-slate-200 bg-white px-6 py-8 shadow-[0_24px_60px_rgba(15,23,42,0.07)]">
+              <div className="max-w-2xl">
+                <h2 className="text-xl font-semibold tracking-tight text-slate-950">
+                  No buckets configured
+                </h2>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  Your inbox is loaded, but there are no active buckets to sort
+                  it into. Create your own taxonomy or restore the stock bucket
+                  set from settings.
+                </p>
+                <Link
+                  className="mt-4 inline-flex items-center justify-center rounded-full border border-slate-200 bg-slate-950 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800"
+                  href="/settings"
+                >
+                  Open settings
+                </Link>
+              </div>
+            </section>
+          ) : null}
           {inbox.buckets.map((bucket) => {
             const tone = getBucketTone(bucket.name);
 
@@ -727,11 +734,6 @@ export function InboxDashboard({
                           >
                             {bucket.count}
                           </span>
-                          {bucket.isCustom ? (
-                            <span className="rounded-full border border-stone-200 bg-stone-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-stone-700">
-                              Custom
-                            </span>
-                          ) : null}
                         </div>
                       </div>
                     </div>

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 
+import { markPendingInboxRefresh } from "@/app/components/inbox-dashboard-storage";
 import {
   APPROVAL_MODE_OPTIONS,
   type ApprovalModeOption,
@@ -186,6 +187,7 @@ export function ApprovalModeSettings({
           ? payload.inboxThreadLimit
           : parsedValue;
 
+      markPendingInboxRefresh(nextInboxThreadLimit);
       setSavedInboxThreadLimit(nextInboxThreadLimit);
       setInboxThreadLimit(String(nextInboxThreadLimit));
       toast.success("Inbox thread limit updated.");

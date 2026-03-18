@@ -25,6 +25,7 @@ export type ChatMessage = {
 
 export type EmailToolResult = {
   body: string;
+  bodyHtml?: string;
   lastMessageAt: string | null;
   sender: string | null;
   snippet: string;
@@ -693,6 +694,7 @@ function extractEmailResults(
     const candidate = output as {
       threads?: Array<{
         body?: unknown;
+        bodyHtml?: unknown;
         id?: unknown;
         lastMessageAt?: unknown;
         sender?: unknown;
@@ -716,6 +718,10 @@ function extractEmailResults(
             typeof thread.body === "string" && thread.body.trim().length
               ? thread.body
               : thread.snippet,
+          bodyHtml:
+            typeof thread.bodyHtml === "string" && thread.bodyHtml.trim().length
+              ? thread.bodyHtml
+              : undefined,
           lastMessageAt:
             typeof thread.lastMessageAt === "string" ? thread.lastMessageAt : null,
           sender: typeof thread.sender === "string" ? thread.sender : null,
@@ -732,6 +738,7 @@ function extractEmailResults(
   if (toolName === "get_email_thread") {
     const thread = output as {
       body?: unknown;
+      bodyHtml?: unknown;
       id?: unknown;
       lastMessageAt?: unknown;
       sender?: unknown;
@@ -753,6 +760,10 @@ function extractEmailResults(
           typeof thread.body === "string" && thread.body.trim().length
             ? thread.body
             : thread.snippet,
+        bodyHtml:
+          typeof thread.bodyHtml === "string" && thread.bodyHtml.trim().length
+            ? thread.bodyHtml
+            : undefined,
         lastMessageAt:
           typeof thread.lastMessageAt === "string" ? thread.lastMessageAt : null,
         sender: typeof thread.sender === "string" ? thread.sender : null,

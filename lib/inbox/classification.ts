@@ -230,10 +230,7 @@ type BucketMembershipClassification = {
   source: FinalClassification["source"];
 };
 
-const INBOX_STATE_CACHE_KEY = "inbox-state-v2";
-const INBOX_STATE_CACHE_KEY_HASH = createHash("sha256")
-  .update(INBOX_STATE_CACHE_KEY)
-  .digest("hex");
+const INBOX_STATE_CACHE_KEY_PREFIX = "inbox-state-v2";
 
 const MIN_INBOX_CLASSIFICATION_BATCH_SIZE = 1;
 const MAX_INBOX_CLASSIFICATION_BATCH_SIZE = 100;
@@ -302,11 +299,19 @@ function getBucketPromptHashes(buckets: BucketRecord[]) {
   return new Map(buckets.map((bucket) => [bucket.id, getBucketPromptHash(bucket)]));
 }
 
-function getInboxStateCacheRow(ownerId: string) {
+function getInboxStateCacheKey(configuredThreadLimit: number) {
+  return `${INBOX_STATE_CACHE_KEY_PREFIX}:${configuredThreadLimit}`;
+}
+
+function getInboxStateCacheKeyHash(cacheKey: string) {
+  return createHash("sha256").update(cacheKey).digest("hex");
+}
+
+function getInboxStateCacheRow(ownerId: string, cacheKey: string) {
   return prisma.inboxClassificationCache.findUnique({
     where: {
       ownerId_cacheKeyHash: {
-        cacheKeyHash: INBOX_STATE_CACHE_KEY_HASH,
+        cacheKeyHash: getInboxStateCacheKeyHash(cacheKey),
         ownerId,
       },
     },
@@ -316,28 +321,47 @@ function getInboxStateCacheRow(ownerId: string) {
   });
 }
 
-async function loadInboxStatePayload(ownerId: string) {
-  const row = await getInboxStateCacheRow(ownerId);
+async function loadInboxStatePayload(ownerId: string, configuredThreadLimit: number) {
+  const cacheKey = getInboxStateCacheKey(configuredThreadLimit);
+  const row = await getInboxStateCacheRow(ownerId, cacheKey);
 
-  return row ? parseInboxStatePayload(row.payload) : null;
+  if (row) {
+    return parseInboxStatePayload(row.payload);
+  }
+
+  const legacyRow = await getInboxStateCacheRow(ownerId, INBOX_STATE_CACHE_KEY_PREFIX);
+
+  if (!legacyRow) {
+    return null;
+  }
+
+  const parsedLegacyPayload = parseInboxStatePayload(legacyRow.payload);
+
+  if (parsedLegacyPayload?.configuredThreadLimit !== configuredThreadLimit) {
+    return null;
+  }
+
+  return parsedLegacyPayload;
 }
 
 async function saveInboxStatePayload(ownerId: string, payload: InboxStatePayload) {
+  const cacheKey = getInboxStateCacheKey(payload.configuredThreadLimit);
+
   await prisma.inboxClassificationCache.upsert({
     where: {
       ownerId_cacheKeyHash: {
-        cacheKeyHash: INBOX_STATE_CACHE_KEY_HASH,
+        cacheKeyHash: getInboxStateCacheKeyHash(cacheKey),
         ownerId,
       },
     },
     create: {
-      cacheKey: INBOX_STATE_CACHE_KEY,
-      cacheKeyHash: INBOX_STATE_CACHE_KEY_HASH,
+      cacheKey,
+      cacheKeyHash: getInboxStateCacheKeyHash(cacheKey),
       ownerId,
       payload: payload as Prisma.InputJsonValue,
     },
     update: {
-      cacheKey: INBOX_STATE_CACHE_KEY,
+      cacheKey,
       payload: payload as Prisma.InputJsonValue,
     },
   });
@@ -400,8 +424,12 @@ function getBucketSortKey(name: string) {
   return defaultIndex === -1 ? Number.MAX_SAFE_INTEGER : defaultIndex;
 }
 
-function sortBuckets(buckets: BucketRecord[]) {
+function sortBucketRecordsByDisplayOrder(buckets: BucketRecord[]) {
   return [...buckets].sort((left, right) => {
+    if (left.sortOrder !== right.sortOrder) {
+      return left.sortOrder - right.sortOrder;
+    }
+
     const leftRank = getBucketSortKey(left.name);
     const rightRank = getBucketSortKey(right.name);
 
@@ -417,10 +445,17 @@ function sortBuckets(buckets: BucketRecord[]) {
   });
 }
 
-function sortBucketNames(bucketNames: string[]) {
+function sortBucketNames(
+  bucketNames: string[],
+  orderedBucketNames: string[] = DEFAULT_BUCKET_ORDER,
+) {
+  const bucketOrder = new Map(
+    orderedBucketNames.map((bucketName, index) => [bucketName, index]),
+  );
+
   return [...bucketNames].sort((left, right) => {
-    const leftRank = getBucketSortKey(left);
-    const rightRank = getBucketSortKey(right);
+    const leftRank = bucketOrder.get(left) ?? Number.MAX_SAFE_INTEGER;
+    const rightRank = bucketOrder.get(right) ?? Number.MAX_SAFE_INTEGER;
 
     if (leftRank !== rightRank) {
       return leftRank - rightRank;
@@ -690,11 +725,12 @@ async function classifyWithLLM(
 ): Promise<Map<string, FinalClassification>> {
   const results = new Map<string, FinalClassification>();
 
-  if (!threads.length || !openAIClient || !model) {
+  if (!threads.length || !buckets.length || !openAIClient || !model) {
     return results;
   }
 
   const chunkSize = getInboxClassificationBatchSize();
+  const orderedBucketNames = buckets.map((bucket) => bucket.name);
   const allowedBucketNames = new Set(buckets.map((bucket) => bucket.name));
   const threadChunks: EmailThreadSummary[][] = [];
 
@@ -780,12 +816,17 @@ async function classifyWithLLM(
           : typeof entry.bucketName === "string"
             ? [entry.bucketName]
             : [];
-        const bucketNames = sortBucketNames([...new Set(
-          rawBucketNames.filter(
-            (bucketName): bucketName is string =>
-              typeof bucketName === "string" && allowedBucketNames.has(bucketName),
-          ),
-        )]);
+        const bucketNames = sortBucketNames(
+          [
+            ...new Set(
+              rawBucketNames.filter(
+                (bucketName): bucketName is string =>
+                  typeof bucketName === "string" && allowedBucketNames.has(bucketName),
+              ),
+            ),
+          ],
+          orderedBucketNames,
+        );
 
         if (
           typeof entry.threadId !== "string" ||
@@ -951,52 +992,13 @@ async function ensureOwnerBuckets(ownerId: string) {
       sortOrder: true,
     },
   });
-  const existingBucketMap = new Map(
-    existingBuckets.map((bucket) => [bucket.name, bucket]),
+  return sortBucketRecordsByDisplayOrder(
+    await normalizeBucketSortOrders(ownerId, existingBuckets),
   );
-  const missingDefaults = DEFAULT_BUCKETS.filter(
-    (bucket) => !existingBucketMap.has(bucket.name),
-  );
+}
 
-  if (missingDefaults.length) {
-    await prisma.bucket.createMany({
-      data: missingDefaults.map((bucket) => ({
-        description: bucket.description,
-        kind: BucketKind.SYSTEM,
-        name: bucket.name,
-        ownerId,
-        sortOrder: 1_000 + getBucketSortKey(bucket.name),
-      })),
-      skipDuplicates: true,
-    });
-  }
-
-  const defaultPromptBackfills = DEFAULT_BUCKETS.flatMap((bucket) => {
-    const existingBucket = existingBucketMap.get(bucket.name);
-
-    if (!existingBucket || existingBucket.description?.trim()) {
-      return [];
-    }
-
-    return prisma.bucket.update({
-      where: {
-        id: existingBucket.id,
-      },
-      data: {
-        description: bucket.description,
-        kind: BucketKind.SYSTEM,
-      },
-      select: {
-        id: true,
-      },
-    });
-  });
-
-  if (defaultPromptBackfills.length) {
-    await Promise.all(defaultPromptBackfills);
-  }
-
-  const allBuckets = await prisma.bucket.findMany({
+async function restoreDefaultBuckets(ownerId: string) {
+  const existingBuckets = await prisma.bucket.findMany({
     where: {
       ownerId,
     },
@@ -1009,8 +1011,65 @@ async function ensureOwnerBuckets(ownerId: string) {
       sortOrder: true,
     },
   });
+  const existingBucketMap = new Map(
+    existingBuckets.map((bucket) => [bucket.name.toLocaleLowerCase(), bucket]),
+  );
+  const nextSortOrderStart =
+    existingBuckets.reduce(
+      (highestSortOrder, bucket) => Math.max(highestSortOrder, bucket.sortOrder),
+      -1,
+    ) + 1;
+  const operations: Prisma.PrismaPromise<{ id: string }>[] = [];
+  let nextSortOrder = nextSortOrderStart;
 
-  return sortBuckets(await normalizeBucketSortOrders(ownerId, allBuckets));
+  for (const bucket of DEFAULT_BUCKETS) {
+    const existingBucket = existingBucketMap.get(bucket.name.toLocaleLowerCase());
+
+    if (existingBucket) {
+      operations.push(
+        prisma.bucket.update({
+          where: {
+            id: existingBucket.id,
+          },
+          data: {
+            description: bucket.description,
+            kind: BucketKind.SYSTEM,
+          },
+          select: {
+            id: true,
+          },
+        }),
+      );
+      continue;
+    }
+
+    operations.push(
+      prisma.bucket.create({
+        data: {
+          description: bucket.description,
+          kind: BucketKind.SYSTEM,
+          name: bucket.name,
+          ownerId,
+          sortOrder: nextSortOrder,
+        },
+        select: {
+          id: true,
+        },
+      }),
+    );
+    nextSortOrder += 1;
+  }
+
+  await prisma.$transaction([
+    ...operations,
+    prisma.inboxClassificationCache.deleteMany({
+      where: {
+        ownerId,
+      },
+    }),
+  ]);
+
+  return ensureOwnerBuckets(ownerId);
 }
 
 function normalizePreview(thread: EmailThreadSummary) {
@@ -1033,8 +1092,13 @@ async function classifyThreadsAgainstBuckets(
   buckets: BucketRecord[],
 ) {
   const activeBucketNames = new Set(buckets.map((bucket) => bucket.name));
+  const orderedBucketNames = buckets.map((bucket) => bucket.name);
   const classifications = new Map<string, FinalClassification>();
   const heuristicClassifications = new Map<string, FinalClassification>();
+
+  if (!buckets.length) {
+    return classifications;
+  }
 
   for (const thread of threads) {
     const heuristicClassification = classifyWithHeuristics(
@@ -1061,7 +1125,7 @@ async function classifyThreadsAgainstBuckets(
           ...llmClassification.bucketNames,
           ...(heuristicClassification?.bucketNames ?? []),
         ]),
-      ]);
+      ], orderedBucketNames);
 
       classifications.set(thread.id, {
         bucketNames: mergedBucketNames,
@@ -1185,6 +1249,7 @@ function buildHomepageDataFromState(
 
     const bucketNames = sortBucketNames(
       memberships.map((entry) => entry.bucket.name),
+      buckets.map((bucket) => bucket.name),
     );
 
     if (!bucketNames.length) {
@@ -1582,6 +1647,82 @@ export async function reorderBucketSettings(input: {
   });
 }
 
+export async function deleteBucketSetting(input: {
+  bucketId: string;
+  ownerEmail: string;
+}) {
+  const owner = await prisma.user.findUnique({
+    where: {
+      email: input.ownerEmail,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!owner) {
+    throw new Error("Bucket owner not found.");
+  }
+
+  const bucket = await prisma.bucket.findFirst({
+    where: {
+      id: input.bucketId,
+      ownerId: owner.id,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!bucket) {
+    throw new Error("Bucket not found.");
+  }
+
+  await prisma.$transaction([
+    prisma.bucket.delete({
+      where: {
+        id: bucket.id,
+      },
+      select: {
+        id: true,
+      },
+    }),
+    prisma.inboxClassificationCache.deleteMany({
+      where: {
+        ownerId: owner.id,
+      },
+    }),
+  ]);
+
+  return listBucketSettings({
+    ownerEmail: input.ownerEmail,
+  });
+}
+
+export async function resetDefaultBucketSettings(input: {
+  ownerEmail: string;
+  ownerImage?: string | null;
+  ownerName?: string | null;
+}) {
+  const owner = await upsertAppUser({
+    email: input.ownerEmail,
+    image: input.ownerImage,
+    name: input.ownerName,
+  });
+
+  const buckets = await restoreDefaultBuckets(owner.id);
+
+  return buckets.map(
+    (bucket) =>
+      ({
+        id: bucket.id,
+        isCustom: bucket.kind === BucketKind.CUSTOM,
+        name: bucket.name,
+        prompt: bucket.description ?? "",
+      }) satisfies BucketSetting,
+  );
+}
+
 export async function clearInboxClassificationCache(ownerEmail: string) {
   const owner = await prisma.user.findUnique({
     where: {
@@ -1619,9 +1760,13 @@ export async function hasInboxClassificationCache(ownerEmail: string) {
     return false;
   }
 
-  const payload = await loadInboxStatePayload(owner.id);
+  const cacheRowCount = await prisma.inboxClassificationCache.count({
+    where: {
+      ownerId: owner.id,
+    },
+  });
 
-  return Boolean(payload?.threadIds.length);
+  return cacheRowCount > 0;
 }
 
 export async function getInboxRefreshStatus(input: {
@@ -1635,7 +1780,8 @@ export async function getInboxRefreshStatus(input: {
     image: input.ownerImage,
     name: input.ownerName,
   });
-  const parsedPayload = await loadInboxStatePayload(owner.id);
+  const inboxThreadLimit = await getWorkspaceInboxThreadLimit(input.ownerEmail);
+  const parsedPayload = await loadInboxStatePayload(owner.id, inboxThreadLimit);
 
   if (!parsedPayload) {
     return {
@@ -1645,7 +1791,6 @@ export async function getInboxRefreshStatus(input: {
     };
   }
 
-  const inboxThreadLimit = await getWorkspaceInboxThreadLimit(input.ownerEmail);
   const latestThreadIds = await listRecentInboxThreadIds(input.accessToken, {
     maxResults: inboxThreadLimit,
   });
@@ -1676,7 +1821,7 @@ export async function loadInboxHomepage(input: {
   const buckets = await ensureOwnerBuckets(owner.id);
   const inboxThreadLimit = await getWorkspaceInboxThreadLimit(input.ownerEmail);
   const sortingStartedAt = performance.now();
-  const cachedPayload = await loadInboxStatePayload(owner.id);
+  const cachedPayload = await loadInboxStatePayload(owner.id, inboxThreadLimit);
 
   if (
     cachedPayload &&
