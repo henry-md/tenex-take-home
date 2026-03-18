@@ -5,6 +5,7 @@ The app is a Next.js App Router project with three active layers:
 - Auth and session management via NextAuth Google OAuth.
 - Product routes and UI in `app/`.
 - Persistence and integration state in Prisma/Postgres.
+- Inbox bucketing on the homepage via Gmail reads plus a server-owned OpenAI classification pipeline.
 
 ### Main flow
 
@@ -45,5 +46,6 @@ The app is a Next.js App Router project with three active layers:
 
 - `agent-docs/system.md`
 - `agent-docs/architecture/google-workspace-tools.md`
+- `agent-docs/architecture/inbox-bucketing.md`
 - `agent-docs/architecture/tool-calling.md`
 - `agent-docs/architecture/chat-email-rendering.md`

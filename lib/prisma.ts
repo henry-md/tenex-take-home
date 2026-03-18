@@ -26,6 +26,7 @@ function hasRequiredModels(client: PrismaClient | undefined) {
   return Boolean(
     client &&
       "integrationActionDraft" in client &&
+      "inboxClassificationCache" in client &&
       "workspaceApprovalPreference" in client &&
       "openAIChatMessage" in client &&
       "openAIRateLimitBucket" in client,

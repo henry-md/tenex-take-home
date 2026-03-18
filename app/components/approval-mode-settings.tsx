@@ -73,12 +73,22 @@ function getApprovalModeClasses(
 
 type ApprovalModeSettingsProps = {
   initialApprovalMode: ApprovalModeOption;
+  initialInboxThreadLimit: number;
 };
 
 export function ApprovalModeSettings({
   initialApprovalMode,
+  initialInboxThreadLimit,
 }: ApprovalModeSettingsProps) {
   const [approvalMode, setApprovalMode] = useState(initialApprovalMode);
+  const [inboxThreadLimit, setInboxThreadLimit] = useState(
+    String(initialInboxThreadLimit),
+  );
+  const [savedInboxThreadLimit, setSavedInboxThreadLimit] = useState(
+    initialInboxThreadLimit,
+  );
+  const [isSavingInboxThreadLimit, setIsSavingInboxThreadLimit] =
+    useState(false);
   const approvalModeRequestId = useRef(0);
 
   async function handleApprovalModeChange(mode: ApprovalModeOption["mode"]) {
@@ -136,6 +146,60 @@ export function ApprovalModeSettings({
     }
   }
 
+  async function handleInboxThreadLimitSave() {
+    const trimmedValue = inboxThreadLimit.trim();
+    const parsedValue = Number(trimmedValue);
+
+    if (!trimmedValue || !Number.isInteger(parsedValue) || parsedValue < 1) {
+      toast.error("Enter a whole number greater than 0.");
+      return;
+    }
+
+    setIsSavingInboxThreadLimit(true);
+
+    try {
+      const response = await fetch("/api/inbox-thread-limit", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          inboxThreadLimit: parsedValue,
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as
+          | {
+              error?: string;
+            }
+          | null;
+
+        throw new Error(payload?.error ?? "Unable to update inbox thread limit.");
+      }
+
+      const payload = (await response.json()) as {
+        inboxThreadLimit?: number;
+      };
+      const nextInboxThreadLimit =
+        typeof payload.inboxThreadLimit === "number"
+          ? payload.inboxThreadLimit
+          : parsedValue;
+
+      setSavedInboxThreadLimit(nextInboxThreadLimit);
+      setInboxThreadLimit(String(nextInboxThreadLimit));
+      toast.success("Inbox thread limit updated.");
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Unable to update inbox thread limit.",
+      );
+    } finally {
+      setIsSavingInboxThreadLimit(false);
+    }
+  }
+
   return (
     <section className="rounded-[2rem] border border-white/70 bg-white/88 p-6 shadow-[0_30px_80px_rgba(15,23,42,0.12)] backdrop-blur md:p-8">
       <div className="flex flex-col gap-6">
@@ -145,10 +209,10 @@ export function ApprovalModeSettings({
               Settings
             </p>
             <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">
-              Permissions
+              Workspace settings
             </h1>
             <p className="mt-2 text-sm leading-6 text-slate-600">
-              Control when Gmail and Calendar changes pause for review.
+              Control approval behavior and how many inbox threads load into the triage board.
             </p>
           </div>
           <Link
@@ -218,6 +282,58 @@ export function ApprovalModeSettings({
                 );
               })}
             </div>
+          </div>
+        </section>
+
+        <section className="rounded-[1.5rem] border border-slate-200 bg-[linear-gradient(180deg,rgba(252,252,252,0.96),rgba(244,247,250,0.92))] p-5">
+          <div className="flex flex-col gap-5">
+            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+              <div className="max-w-xl">
+                <h2 className="text-lg font-semibold tracking-tight text-slate-950">
+                  Inbox pull size
+                </h2>
+                <p className="mt-1 text-sm leading-6 text-slate-600">
+                  Choose how many recent inbox threads are loaded, bucketed, and refreshed for this workspace.
+                </p>
+              </div>
+              <div className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.18em] text-slate-600">
+                Current limit: {savedInboxThreadLimit}
+              </div>
+            </div>
+
+            <form
+              className="flex flex-col gap-3 sm:flex-row sm:items-end"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleInboxThreadLimitSave();
+              }}
+            >
+              <label className="flex-1">
+                <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  Threads per inbox refresh
+                </span>
+                <input
+                  className="mt-2 w-full rounded-[1rem] border border-slate-200 bg-white px-4 py-3 text-sm text-slate-950 outline-none transition focus:border-slate-400"
+                  inputMode="numeric"
+                  min="1"
+                  onChange={(event) => setInboxThreadLimit(event.target.value)}
+                  step="1"
+                  type="number"
+                  value={inboxThreadLimit}
+                />
+              </label>
+              <button
+                className="inline-flex h-[3.125rem] items-center justify-center rounded-full bg-slate-950 px-5 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+                disabled={
+                  isSavingInboxThreadLimit ||
+                  inboxThreadLimit.trim() === "" ||
+                  Number(inboxThreadLimit) === savedInboxThreadLimit
+                }
+                type="submit"
+              >
+                {isSavingInboxThreadLimit ? "Saving..." : "Save inbox limit"}
+              </button>
+            </form>
           </div>
         </section>
       </div>

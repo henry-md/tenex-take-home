@@ -20,6 +20,20 @@ const OPENAI_CALLS_PER_DAY = readRateLimit(
   100,
 );
 
+export function getOpenAIRateLimit(window: OpenAIRateLimitWindow) {
+  return window === OpenAIRateLimitWindow.MINUTE
+    ? OPENAI_CALLS_PER_MINUTE
+    : OPENAI_CALLS_PER_DAY;
+}
+
+export function getOpenAIRateLimitMessage(window: OpenAIRateLimitWindow) {
+  const limit = getOpenAIRateLimit(window);
+
+  return window === OpenAIRateLimitWindow.MINUTE
+    ? `OpenAI usage is limited to ${limit} calls per minute per user. Please try again shortly.`
+    : `OpenAI usage is limited to ${limit} calls per day per user. Please try again tomorrow.`;
+}
+
 export class OpenAIRateLimitError extends Error {
   limit: number;
   retryAfterSeconds: number;

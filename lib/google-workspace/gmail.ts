@@ -392,6 +392,33 @@ async function getGmailThread(
   );
 }
 
+async function mapThreadsWithConcurrency<T>(
+  threadIds: string[],
+  mapper: (threadId: string) => Promise<T>,
+  concurrencyLimit = 12,
+) {
+  const results: T[] = new Array(threadIds.length);
+  let nextIndex = 0;
+
+  async function runWorker() {
+    while (nextIndex < threadIds.length) {
+      const currentIndex = nextIndex;
+
+      nextIndex += 1;
+      results[currentIndex] = await mapper(threadIds[currentIndex]);
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(concurrencyLimit, Math.max(threadIds.length, 1)) },
+      () => runWorker(),
+    ),
+  );
+
+  return results;
+}
+
 async function getLabelByName(accessToken: string, labelName: string) {
   const response = await googleApiRequest<{ labels?: GmailLabel[] }>(
     accessToken,
@@ -445,13 +472,37 @@ export async function searchEmailThreads(
     },
   );
   const threadIds = response.threads?.map((thread) => thread.id) ?? [];
-  const threads = await Promise.all(
-    threadIds.map((threadId) => getEmailThread(accessToken, threadId)),
+  const threads = await mapThreadsWithConcurrency(threadIds, (threadId) =>
+    getEmailThread(accessToken, threadId),
   );
 
   return {
     threads,
   };
+}
+
+export async function listRecentInboxThreads(
+  accessToken: string,
+  input?: {
+    maxResults?: number;
+  },
+) {
+  const maxResults = Math.max(input?.maxResults ?? 1, 1);
+  const response = await googleApiRequest<{ threads?: Array<{ id: string }> }>(
+    accessToken,
+    "/gmail/v1/users/me/threads",
+    {
+      query: {
+        maxResults,
+        q: "in:inbox",
+      },
+    },
+  );
+  const threadIds = response.threads?.map((thread) => thread.id) ?? [];
+
+  return mapThreadsWithConcurrency(threadIds, (threadId) =>
+    getEmailThread(accessToken, threadId),
+  );
 }
 
 export async function getEmailThread(accessToken: string, threadId: string) {

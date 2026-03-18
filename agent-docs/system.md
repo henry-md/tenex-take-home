@@ -5,8 +5,8 @@ Inbox Concierge helps a user connect a Google Workspace (G-Suite) account, read 
 
 ## Core User Flow
 1. On first visit, prompt the user to authenticate with Google using OAuth and request Gmail read access sufficient to list threads and message snippets.
-2. After authentication, fetch the user's 200 most recent Gmail threads.
-3. Run those 200 threads through an LLM-powered classification pipeline that assigns each thread to exactly one bucket.
+2. After authentication, fetch the user's configured recent Gmail thread count. New users default to `DEFAULT_INBOX_THREAD_LIMIT`.
+3. Run that thread set through an LLM-powered classification pipeline that assigns each thread to exactly one bucket.
 4. Render a homepage-style inbox view grouped by bucket. Each listed item only needs:
    - Subject line
    - Short preview/snippet

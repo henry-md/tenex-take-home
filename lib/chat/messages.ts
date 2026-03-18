@@ -6,6 +6,7 @@ import type {
   ToolCallSummary,
 } from "@/lib/assistant/google-workspace-agent";
 import { prisma } from "@/lib/prisma";
+import { findUserIdByEmail, type AppUserInput, upsertAppUser } from "@/lib/users";
 
 export type PersistedChatMessage = {
   content: string;
@@ -16,11 +17,7 @@ export type PersistedChatMessage = {
   toolCalls?: ToolCallSummary[];
 };
 
-export type ChatOwnerInput = {
-  email: string;
-  image?: string | null;
-  name?: string | null;
-};
+export type ChatOwnerInput = AppUserInput;
 
 function isUnknownChatFieldError(error: unknown) {
   if (!(error instanceof Error)) {
@@ -232,41 +229,8 @@ function parseEmailResults(value: unknown): EmailToolResult[] | undefined {
   return emailResults.length ? emailResults : undefined;
 }
 
-async function findChatOwnerId(email: string) {
-  const user = await prisma.user.findUnique({
-    where: {
-      email,
-    },
-    select: {
-      id: true,
-    },
-  });
-
-  return user?.id ?? null;
-}
-
-async function upsertChatOwner(owner: ChatOwnerInput) {
-  return prisma.user.upsert({
-    where: {
-      email: owner.email,
-    },
-    create: {
-      email: owner.email,
-      image: owner.image ?? null,
-      name: owner.name ?? null,
-    },
-    update: {
-      ...(owner.image !== undefined ? { image: owner.image } : {}),
-      ...(owner.name !== undefined ? { name: owner.name } : {}),
-    },
-    select: {
-      id: true,
-    },
-  });
-}
-
 export async function listPersistedChatMessages(ownerEmail: string) {
-  const ownerId = await findChatOwnerId(ownerEmail);
+  const ownerId = await findUserIdByEmail(ownerEmail);
 
   if (!ownerId) {
     return [];
@@ -344,7 +308,7 @@ export async function createPersistedChatMessage(input: {
   role: PersistedChatMessage["role"];
   toolCalls?: ToolCallSummary[];
 }) {
-  const owner = await upsertChatOwner(input.owner);
+  const owner = await upsertAppUser(input.owner);
 
   let message;
 
@@ -388,7 +352,7 @@ export async function createPersistedChatMessage(input: {
 }
 
 export async function deletePersistedChatMessages(ownerEmail: string) {
-  const ownerId = await findChatOwnerId(ownerEmail);
+  const ownerId = await findUserIdByEmail(ownerEmail);
 
   if (!ownerId) {
     return 0;

@@ -13,7 +13,10 @@ import {
   listAssistantChatMessages,
   listPersistedChatMessages,
 } from "@/lib/chat/messages";
-import { OpenAIRateLimitError } from "@/lib/openai/rate-limit";
+import {
+  getOpenAIRateLimitMessage,
+  OpenAIRateLimitError,
+} from "@/lib/openai/rate-limit";
 
 const apiKey = process.env.OPENAI_API_KEY;
 const model = process.env.OPENAI_MODEL;
@@ -213,10 +216,7 @@ export async function POST(request: Request) {
       if (assistantError instanceof OpenAIRateLimitError) {
         return NextResponse.json(
           {
-            error:
-              assistantError.window === "MINUTE"
-                ? "OpenAI usage is limited to 30 calls per minute per user. Please try again shortly."
-                : "OpenAI usage is limited to 100 calls per day per user. Please try again tomorrow.",
+            error: getOpenAIRateLimitMessage(assistantError.window),
           },
           {
             status: 429,

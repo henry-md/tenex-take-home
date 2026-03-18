@@ -63,6 +63,7 @@ model User {
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   buckets            Bucket[]
+  inboxCaches        InboxClassificationCache[]
   emailThreads       EmailThread[]
   openAIChatMessages OpenAIChatMessage[]
 }
@@ -121,10 +122,11 @@ model IntegrationActionDraft {
 }
 
 model WorkspaceApprovalPreference {
-  ownerEmail String                @id
-  mode       WorkspaceApprovalMode @default(SAFE)
-  createdAt  DateTime              @default(now())
-  updatedAt  DateTime              @updatedAt
+  ownerEmail       String                @id
+  mode             WorkspaceApprovalMode @default(SAFE)
+  inboxThreadLimit Int?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
 }
 
 model OpenAIChatMessage {
@@ -152,4 +154,18 @@ model OpenAIRateLimitBucket {
 
   @@id([ownerEmail, windowType, windowStart])
   @@index([windowType, windowStart])
+}
+
+model InboxClassificationCache {
+  id           String   @id @default(cuid())
+  cacheKey     String
+  cacheKeyHash String
+  payload      Json
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  ownerId      String
+  owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, cacheKeyHash])
+  @@index([ownerId, updatedAt])
 }
