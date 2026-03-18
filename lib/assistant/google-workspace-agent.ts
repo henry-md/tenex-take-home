@@ -20,6 +20,17 @@ export type ChatMessage = {
   role: "assistant" | "user";
 };
 
+export type ToolCallSummary = {
+  arguments: Record<string, unknown>;
+  name: string;
+  status: "error" | "ok";
+};
+
+export type AssistantRunResult = {
+  content: string;
+  toolCalls: ToolCallSummary[];
+};
+
 type AssistantContext = {
   accessToken: string;
   ownerEmail: string;
@@ -156,7 +167,7 @@ const GOOGLE_WORKSPACE_TOOLS: FunctionTool[] = [
     type: "function",
     name: "prepare_email_action",
     description:
-      "Prepare a Gmail action. Depending on the user's approval mode, this may either queue a review draft or execute immediately.",
+      "Prepare a Gmail action. Depending on the user's approval mode, this may either queue a review draft or execute immediately. When one user request affects multiple emails, send all target thread ids together in threadIds and do not split them across separate prepare calls.",
     strict: false,
     parameters: {
       type: "object",
@@ -183,8 +194,14 @@ const GOOGLE_WORKSPACE_TOOLS: FunctionTool[] = [
         threadId: {
           type: "string",
         },
+        threadIds: {
+          type: "array",
+          items: {
+            type: "string",
+          },
+        },
       },
-      required: ["action", "threadId"],
+      required: ["action"],
     },
   },
   {
@@ -253,8 +270,11 @@ function getSystemPrompt() {
     "Use the available tools when the user asks about concrete Gmail threads, labels, calendar events, or actions.",
     "If the user asks about their own Gmail or Calendar data, do not answer from memory or with a capability disclaimer. Use a read tool first unless the request is too ambiguous to execute.",
     "All Gmail and Calendar writes must go through prepare_* tools.",
+    "If one user request modifies multiple Gmail threads, prepare that as a single prepare_email_action call with all target ids in threadIds.",
     "Only tell the user to review the approval queue when a prepare_* tool returns a pending status or requiresApproval=true.",
+    "When a prepare_* tool returns a pending status or requires approval, do not ask the user a follow-up question like 'would you like me to proceed' or 'should I do that'. State that the change has been added to the approval queue and that the user can approve it there.",
     "Only say a Gmail or Calendar change already happened when the tool result status is EXECUTED.",
+    "If a tool result status is EXECUTED, say the change was completed. If a tool result status is PENDING, say it was queued for approval.",
     "If an action would be destructive or user intent is ambiguous, ask a clarifying question instead of drafting it.",
   ].join(" ");
 }
@@ -331,6 +351,9 @@ function parseToolArguments(toolCall: ResponseFunctionToolCall) {
 async function handleToolCall(
   toolCall: ResponseFunctionToolCall,
   context: AssistantContext,
+  options?: {
+    forceManualApproval?: boolean;
+  },
 ) {
   const argumentsObject = parseToolArguments(toolCall);
 
@@ -398,7 +421,17 @@ async function handleToolCall(
             typeof argumentsObject.rationale === "string"
               ? argumentsObject.rationale
               : undefined,
-          threadId: String(argumentsObject.threadId ?? ""),
+          forceManualApproval: options?.forceManualApproval,
+          threadId:
+            typeof argumentsObject.threadId === "string"
+              ? argumentsObject.threadId
+              : undefined,
+          threadIds: Array.isArray(argumentsObject.threadIds)
+            ? argumentsObject.threadIds.filter(
+                (threadId): threadId is string =>
+                  typeof threadId === "string",
+              )
+            : undefined,
         },
       });
     case "prepare_calendar_action":
@@ -470,17 +503,42 @@ function asToolOutput(callId: string, output: unknown): ToolOutputInput {
   };
 }
 
+function getRequestedEmailTargetCount(toolCall: ResponseFunctionToolCall) {
+  if (toolCall.name !== "prepare_email_action") {
+    return 0;
+  }
+
+  const argumentsObject = parseToolArguments(toolCall);
+  const threadIds = Array.from(
+    new Set(
+      [
+        ...(Array.isArray(argumentsObject.threadIds)
+          ? argumentsObject.threadIds.filter(
+              (threadId): threadId is string => typeof threadId === "string",
+            )
+          : []),
+        typeof argumentsObject.threadId === "string"
+          ? argumentsObject.threadId
+          : undefined,
+      ].filter((threadId): threadId is string => Boolean(threadId)),
+    ),
+  );
+
+  return threadIds.length;
+}
+
 export async function runGoogleWorkspaceAssistant(input: {
   accessToken: string;
   client: OpenAI;
   messages: ChatMessage[];
   model: string;
   ownerEmail: string;
-}) {
+}): Promise<AssistantRunResult> {
   const context: AssistantContext = {
     accessToken: input.accessToken,
     ownerEmail: input.ownerEmail,
   };
+  const executedToolCalls: ToolCallSummary[] = [];
 
   let response = await input.client.responses.create({
     model: input.model,
@@ -507,18 +565,40 @@ export async function runGoogleWorkspaceAssistant(input: {
     );
 
     if (!toolCalls.length) {
-      return response.output_text || "I could not produce a response.";
+      return {
+        content: response.output_text || "I could not produce a response.",
+        toolCalls: executedToolCalls,
+      };
     }
 
-    const toolOutputs = await Promise.all(
-      toolCalls.map(async (toolCall) => {
-        try {
-          const output = await handleToolCall(toolCall, context);
+    const emailMutationTargetCount = toolCalls.reduce(
+      (total, toolCall) => total + getRequestedEmailTargetCount(toolCall),
+      0,
+    );
+    const shouldForceBulkEmailApproval = emailMutationTargetCount > 1;
 
-          return asToolOutput(toolCall.call_id, {
-            ok: true,
-            result: output,
+    const toolResults = await Promise.all(
+      toolCalls.map(async (toolCall) => {
+        const toolArguments = parseToolArguments(toolCall);
+
+        try {
+          const output = await handleToolCall(toolCall, context, {
+            forceManualApproval:
+              shouldForceBulkEmailApproval &&
+              toolCall.name === "prepare_email_action",
           });
+
+          return {
+            summary: {
+              arguments: toolArguments,
+              name: toolCall.name,
+              status: "ok" as const,
+            },
+            toolOutput: asToolOutput(toolCall.call_id, {
+              ok: true,
+              result: output,
+            }),
+          };
         } catch (error) {
           console.error("Workspace tool call failed", {
             error: serializeToolError(error),
@@ -526,15 +606,27 @@ export async function runGoogleWorkspaceAssistant(input: {
             toolArguments: toolCall.arguments,
           });
 
-          return asToolOutput(toolCall.call_id, {
-            error:
-              error instanceof Error
-                ? error.message
-                : "The requested tool call failed.",
-            ok: false,
-          });
+          return {
+            summary: {
+              arguments: toolArguments,
+              name: toolCall.name,
+              status: "error" as const,
+            },
+            toolOutput: asToolOutput(toolCall.call_id, {
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "The requested tool call failed.",
+              ok: false,
+            }),
+          };
         }
       }),
+    );
+    const toolOutputs = toolResults.map((toolResult) => toolResult.toolOutput);
+
+    executedToolCalls.push(
+      ...toolResults.map((toolResult) => toolResult.summary),
     );
 
     response = await input.client.responses.create({
@@ -545,5 +637,8 @@ export async function runGoogleWorkspaceAssistant(input: {
     });
   }
 
-  return "I hit the tool-call limit before finishing that request.";
+  return {
+    content: "I hit the tool-call limit before finishing that request.",
+    toolCalls: executedToolCalls,
+  };
 }

@@ -46,14 +46,17 @@ type PrepareEmailActionInput = {
     | "UNSTAR";
   labelName?: string;
   rationale?: string;
-  threadId: string;
+  forceManualApproval?: boolean;
+  threadId?: string;
+  threadIds?: string[];
 };
 
 type EmailActionPayload = {
   action: PrepareEmailActionInput["action"];
   labelId?: string;
   labelName?: string;
-  threadId: string;
+  threadId?: string;
+  threadIds?: string[];
 };
 
 type EmailDraftRecordInput = {
@@ -62,7 +65,7 @@ type EmailDraftRecordInput = {
   labelName?: string;
   ownerEmail: string;
   requiresManualApproval: boolean;
-  thread: EmailThreadSummary;
+  threads: EmailThreadSummary[];
 };
 
 export type EmailThreadSummary = {
@@ -174,9 +177,30 @@ function predictLabelIds(
 
 function describeEmailAction(
   action: PrepareEmailActionInput["action"],
-  thread: EmailThreadSummary,
+  threads: EmailThreadSummary[],
   labelName?: string,
 ) {
+  if (threads.length !== 1) {
+    switch (action) {
+      case "ARCHIVE":
+        return `Archive ${threads.length} emails.`;
+      case "MARK_SPAM":
+        return `Move ${threads.length} emails to spam.`;
+      case "STAR":
+        return `Star ${threads.length} emails.`;
+      case "UNSTAR":
+        return `Remove the star from ${threads.length} emails.`;
+      case "TRASH":
+        return `Move ${threads.length} emails to trash.`;
+      case "APPLY_LABEL":
+        return `Apply the "${labelName}" label to ${threads.length} emails.`;
+      case "REMOVE_LABEL":
+        return `Remove the "${labelName}" label from ${threads.length} emails.`;
+    }
+  }
+
+  const [thread] = threads;
+
   switch (action) {
     case "ARCHIVE":
       return `Archive "${thread.subject}".`;
@@ -278,6 +302,40 @@ export async function getEmailThread(accessToken: string, threadId: string) {
   return summarizeThread(thread);
 }
 
+function normalizeThreadIds(input: PrepareEmailActionInput) {
+  const threadIds = Array.from(
+    new Set(
+      [
+        ...(Array.isArray(input.threadIds) ? input.threadIds : []),
+        input.threadId,
+      ].filter((threadId): threadId is string => Boolean(threadId?.trim())),
+    ),
+  );
+
+  if (!threadIds.length) {
+    throw new Error("At least one Gmail thread id is required.");
+  }
+
+  return threadIds;
+}
+
+function getPayloadThreadIds(payload: EmailActionPayload) {
+  const threadIds = Array.from(
+    new Set(
+      [
+        ...(Array.isArray(payload.threadIds) ? payload.threadIds : []),
+        payload.threadId,
+      ].filter((threadId): threadId is string => Boolean(threadId?.trim())),
+    ),
+  );
+
+  if (!threadIds.length) {
+    throw new Error("The email draft payload is incomplete.");
+  }
+
+  return threadIds;
+}
+
 export async function listEmailLabels(accessToken: string) {
   const response = await googleApiRequest<{ labels?: GmailLabel[] }>(
     accessToken,
@@ -299,7 +357,10 @@ export async function prepareEmailActionDraft(input: {
   ownerEmail: string;
   request: PrepareEmailActionInput;
 }) {
-  const thread = await getEmailThread(input.accessToken, input.request.threadId);
+  const threadIds = normalizeThreadIds(input.request);
+  const threads = await Promise.all(
+    threadIds.map((threadId) => getEmailThread(input.accessToken, threadId)),
+  );
   let resolvedLabel: GmailLabel | null = null;
 
   if (
@@ -319,8 +380,11 @@ export async function prepareEmailActionDraft(input: {
   }
 
   const approvalMode = await getWorkspaceApprovalMode(input.ownerEmail);
+  const affectedEmailCount = input.request.forceManualApproval
+    ? Math.max(threads.length, 2)
+    : threads.length;
   const requiresManualApproval = requiresApproval({
-    affectedEmailCount: 1,
+    affectedEmailCount,
     mode: approvalMode,
     provider: "GMAIL",
   });
@@ -331,7 +395,7 @@ export async function prepareEmailActionDraft(input: {
     labelName: resolvedLabel?.name ?? input.request.labelName,
     ownerEmail: input.ownerEmail,
     requiresManualApproval,
-    thread,
+    threads,
   });
 
   if (requiresManualApproval) {
@@ -354,6 +418,8 @@ export async function prepareEmailActionDraft(input: {
 }
 
 async function createEmailActionDraftRecord(input: EmailDraftRecordInput) {
+  const [primaryThread] = input.threads;
+
   const draft = await prisma.integrationActionDraft.create({
     data: {
       ownerEmail: input.ownerEmail,
@@ -362,32 +428,44 @@ async function createEmailActionDraftRecord(input: EmailDraftRecordInput) {
       status: input.requiresManualApproval
         ? IntegrationActionStatus.PENDING
         : IntegrationActionStatus.APPROVED,
-      title: input.thread.subject,
+      title:
+        input.threads.length === 1
+          ? primaryThread.subject
+          : `${input.threads.length} emails`,
       summary: describeEmailAction(
         input.action,
-        input.thread,
+        input.threads,
         input.labelName,
       ),
-      targetId: input.thread.id,
+      targetId: input.threads.length === 1 ? primaryThread.id : null,
       beforeState: {
-        labelIds: input.thread.labelIds,
-        lastMessageAt: input.thread.lastMessageAt,
-        sender: input.thread.sender,
-        snippet: input.thread.snippet,
-        subject: input.thread.subject,
+        affectedEmailCount: input.threads.length,
+        threads: input.threads.map((thread) => ({
+          id: thread.id,
+          labelIds: thread.labelIds,
+          lastMessageAt: thread.lastMessageAt,
+          sender: thread.sender,
+          snippet: thread.snippet,
+          subject: thread.subject,
+        })),
       },
       afterState: {
-        labelIds: predictLabelIds(
-          input.thread.labelIds,
-          input.action,
-          input.labelId,
-        ),
+        affectedEmailCount: input.threads.length,
+        threads: input.threads.map((thread) => ({
+          id: thread.id,
+          labelIds: predictLabelIds(
+            thread.labelIds,
+            input.action,
+            input.labelId,
+          ),
+          subject: thread.subject,
+        })),
       },
       payload: {
         action: input.action,
         labelId: input.labelId,
         labelName: input.labelName,
-        threadId: input.thread.id,
+        threadIds: input.threads.map((thread) => thread.id),
       },
       approvedAt: input.requiresManualApproval ? undefined : new Date(),
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
@@ -402,45 +480,52 @@ export async function executeEmailActionDraft(
   draft: IntegrationActionDraft,
 ) {
   const payload = draft.payload as unknown as EmailActionPayload;
+  const threadIds = getPayloadThreadIds(payload);
 
-  if (payload.action === "TRASH") {
-    await googleApiRequest<void>(
-      accessToken,
-      `/gmail/v1/users/me/threads/${payload.threadId}/trash`,
-      {
-        method: "POST",
-      },
-    );
-  } else if (payload.action === "ARCHIVE") {
-    await modifyThreadLabels(accessToken, payload.threadId, {
-      removeLabelIds: ["INBOX"],
-    });
-  } else if (payload.action === "MARK_SPAM") {
-    await modifyThreadLabels(accessToken, payload.threadId, {
-      addLabelIds: ["SPAM"],
-      removeLabelIds: ["INBOX"],
-    });
-  } else if (payload.action === "STAR") {
-    await modifyThreadLabels(accessToken, payload.threadId, {
-      addLabelIds: ["STARRED"],
-    });
-  } else if (payload.action === "UNSTAR") {
-    await modifyThreadLabels(accessToken, payload.threadId, {
-      removeLabelIds: ["STARRED"],
-    });
-  } else if (payload.action === "APPLY_LABEL" && payload.labelId) {
-    await modifyThreadLabels(accessToken, payload.threadId, {
-      addLabelIds: [payload.labelId],
-    });
-  } else if (payload.action === "REMOVE_LABEL" && payload.labelId) {
-    await modifyThreadLabels(accessToken, payload.threadId, {
-      removeLabelIds: [payload.labelId],
-    });
-  } else {
-    throw new Error("The email draft payload is incomplete.");
-  }
+  await Promise.all(
+    threadIds.map(async (threadId) => {
+      if (payload.action === "TRASH") {
+        await googleApiRequest<void>(
+          accessToken,
+          `/gmail/v1/users/me/threads/${threadId}/trash`,
+          {
+            method: "POST",
+          },
+        );
+      } else if (payload.action === "ARCHIVE") {
+        await modifyThreadLabels(accessToken, threadId, {
+          removeLabelIds: ["INBOX"],
+        });
+      } else if (payload.action === "MARK_SPAM") {
+        await modifyThreadLabels(accessToken, threadId, {
+          addLabelIds: ["SPAM"],
+          removeLabelIds: ["INBOX"],
+        });
+      } else if (payload.action === "STAR") {
+        await modifyThreadLabels(accessToken, threadId, {
+          addLabelIds: ["STARRED"],
+        });
+      } else if (payload.action === "UNSTAR") {
+        await modifyThreadLabels(accessToken, threadId, {
+          removeLabelIds: ["STARRED"],
+        });
+      } else if (payload.action === "APPLY_LABEL" && payload.labelId) {
+        await modifyThreadLabels(accessToken, threadId, {
+          addLabelIds: [payload.labelId],
+        });
+      } else if (payload.action === "REMOVE_LABEL" && payload.labelId) {
+        await modifyThreadLabels(accessToken, threadId, {
+          removeLabelIds: [payload.labelId],
+        });
+      } else {
+        throw new Error("The email draft payload is incomplete.");
+      }
+    }),
+  );
 
-  const refreshedThread = await getEmailThread(accessToken, payload.threadId);
+  const refreshedThreads = await Promise.all(
+    threadIds.map((threadId) => getEmailThread(accessToken, threadId)),
+  );
 
   return prisma.integrationActionDraft.update({
     where: {
@@ -450,7 +535,10 @@ export async function executeEmailActionDraft(
       status: IntegrationActionStatus.EXECUTED,
       approvedAt: new Date(),
       executedAt: new Date(),
-      executionResult: refreshedThread,
+      executionResult: {
+        affectedEmailCount: refreshedThreads.length,
+        threads: refreshedThreads,
+      },
       failureReason: null,
     },
   });

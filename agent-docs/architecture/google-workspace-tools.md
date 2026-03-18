@@ -4,6 +4,8 @@
 
 Support Gmail and Google Calendar actions in chat without exposing raw Google APIs directly to the model, while letting the user choose how much manual approval is required before mutations execute.
 
+This document focuses on the Google Workspace tool surface and approval behavior. For the end-to-end Responses API loop and `/api/chat` contract, see `agent-docs/architecture/tool-calling.md`.
+
 ## Tool surface
 
 Model-visible tools are grouped by user intent instead of by Google endpoint:
@@ -16,6 +18,7 @@ Model-visible tools are grouped by user intent instead of by Google endpoint:
   - `get_calendar_event`
 - Mutation tools
   - `prepare_email_action`
+    - Accepts one or more Gmail thread ids for the same action.
   - `prepare_calendar_action`
 - Queue inspection
   - `list_pending_google_actions`
@@ -52,7 +55,16 @@ When approval is required, the flow is:
 
 When approval is not required, the server still creates an audit record and immediately executes it.
 
+For Gmail, approval scope is based on the total number of target threads in a prepared action, not just a single thread. The assistant should batch one user request that touches multiple emails into a single `prepare_email_action` call. As a fallback, if the model emits multiple Gmail prepare calls in the same response step and they affect more than one email in total, the server forces those calls through approval in bulk-email mode.
+
 The assistant must never claim a mutation succeeded when the tool returned a pending draft. It may only confirm completion when the tool result status is `EXECUTED`.
+
+## Tool calling expectations
+
+- The model only sees typed tool definitions from `lib/assistant/google-workspace-agent.ts`.
+- The model never calls Google APIs directly.
+- Server handlers parse tool arguments and route them into Gmail, Calendar, or draft modules.
+- `/api/chat` returns final assistant text plus a compact `toolCalls` summary for the UI.
 
 ## Current implementation notes
 

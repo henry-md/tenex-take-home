@@ -16,13 +16,20 @@ type ChatMessage = {
   content: string;
   id: string;
   role: "assistant" | "user";
+  toolCalls?: ToolCallSummary[];
+};
+
+type ToolCallSummary = {
+  arguments: Record<string, unknown>;
+  name: string;
+  status: "error" | "ok";
 };
 
 type ActionDraft = {
+  affectedCount: number;
   afterState: unknown;
   beforeState: unknown;
   createdAt: string;
-  expiresAt: string;
   id: string;
   kind: string;
   provider: string;
@@ -79,11 +86,43 @@ function getDraftActionLabel(draft: ActionDraft) {
 }
 
 function getDraftCountLabel(draft: ActionDraft) {
-  return draft.provider === "GMAIL" ? "1 email" : "1 event";
+  if (draft.provider === "GMAIL") {
+    return `${draft.affectedCount} email${draft.affectedCount === 1 ? "" : "s"}`;
+  }
+
+  return `${draft.affectedCount} event${draft.affectedCount === 1 ? "" : "s"}`;
 }
 
-function getDraftScopeLabel(draft: ActionDraft) {
-  return draft.provider === "GMAIL" ? "Gmail" : "Calendar";
+function formatToolCallName(name: string) {
+  return name.replaceAll("_", " ");
+}
+
+function formatToolCallValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    value === null
+  ) {
+    return String(value);
+  }
+
+  return JSON.stringify(value);
+}
+
+function summarizeToolCallArguments(argumentsObject: Record<string, unknown>) {
+  const entries = Object.entries(argumentsObject);
+
+  if (!entries.length) {
+    return "No arguments";
+  }
+
+  return entries
+    .map(([key, value]) => `${key}: ${formatToolCallValue(value)}`)
+    .join(", ");
 }
 
 export function OpenAIChat({
@@ -124,10 +163,16 @@ export function OpenAIChat({
     }, 4000);
   }
 
-  function updateAssistantMessage(messageId: string, content: string) {
+  function updateAssistantMessage(
+    messageId: string,
+    content: string,
+    toolCalls: ToolCallSummary[] = [],
+  ) {
     setMessages((currentMessages) =>
       currentMessages.map((message) =>
-        message.id === messageId ? { ...message, content } : message,
+        message.id === messageId
+          ? { ...message, content, toolCalls }
+          : message,
       ),
     );
   }
@@ -222,8 +267,16 @@ export function OpenAIChat({
         throw new Error(payload?.error ?? "Chat request failed.");
       }
 
-      const assistantContent = await response.text();
-      updateAssistantMessage(nextAssistantMessageId, assistantContent);
+      const payload = (await response.json()) as {
+        content?: string;
+        toolCalls?: ToolCallSummary[];
+      };
+
+      updateAssistantMessage(
+        nextAssistantMessageId,
+        payload.content ?? "I could not produce a response.",
+        payload.toolCalls ?? [],
+      );
       await loadDrafts();
     } catch (submissionError) {
       setMessages((currentMessages) =>
@@ -318,7 +371,25 @@ export function OpenAIChat({
                       : "bg-white text-slate-700"
                   }`}
                 >
-                  {message.content}
+                  <p>{message.content}</p>
+                  {message.role === "assistant" && message.toolCalls?.length ? (
+                    <details className="mt-3">
+                      <summary className="cursor-pointer text-xs font-medium text-slate-400 transition hover:text-slate-500">
+                        show toolcalls
+                      </summary>
+                      <div className="mt-2 space-y-2 border-l border-slate-200 pl-3 text-xs leading-5 text-slate-500">
+                        {message.toolCalls.map((toolCall, index) => (
+                          <div key={`${message.id}-${toolCall.name}-${index}`}>
+                            <p className="font-medium text-slate-600">
+                              {formatToolCallName(toolCall.name)}
+                              {toolCall.status === "error" ? " (failed)" : ""}
+                            </p>
+                            <p>{summarizeToolCallArguments(toolCall.arguments)}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  ) : null}
                 </article>
               ))}
             </div>
@@ -395,31 +466,11 @@ export function OpenAIChat({
                       key={draft.id}
                       className="rounded-[1.25rem] border border-slate-800 bg-slate-900/80 p-4"
                     >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <h3 className="text-base font-semibold text-white">
-                            {getDraftActionLabel(draft)}
-                          </h3>
-                          <p className="mt-1 text-sm leading-6 text-slate-300">
-                            {draft.title ?? draft.summary}
-                          </p>
-                        </div>
-                        <p className="rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-200">
-                          Pending
-                        </p>
-                      </div>
-
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <p className="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-200">
-                          {getDraftScopeLabel(draft)}
-                        </p>
-                        <p className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-200">
-                          {getDraftCountLabel(draft)}
-                        </p>
-                      </div>
-
-                      <p className="mt-3 text-xs leading-5 text-slate-400">
-                        Expires {new Date(draft.expiresAt).toLocaleString()}
+                      <h3 className="text-base font-semibold text-white">
+                        {getDraftActionLabel(draft)}
+                      </h3>
+                      <p className="mt-2 text-sm leading-6 text-slate-300">
+                        {getDraftCountLabel(draft)}
                       </p>
 
                       <div className="mt-4 flex gap-2">

@@ -46,7 +46,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const responseText = await runGoogleWorkspaceAssistant({
+    const assistantResponse = await runGoogleWorkspaceAssistant({
       accessToken: session.accessToken,
       client,
       messages,
@@ -54,10 +54,9 @@ export async function POST(request: Request) {
       ownerEmail,
     });
 
-    return new Response(responseText, {
+    return NextResponse.json(assistantResponse, {
       headers: {
         "Cache-Control": "no-cache, no-transform",
-        "Content-Type": "text/plain; charset=utf-8",
       },
     });
   } catch (error) {

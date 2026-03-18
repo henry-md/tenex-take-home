@@ -12,12 +12,28 @@ function getErrorMessage(error: unknown) {
 }
 
 function serializeDraft(draft: IntegrationActionDraft) {
+  const payload = draft.payload as {
+    threadId?: string;
+    threadIds?: string[];
+  };
+  const affectedCount =
+    draft.provider === "GMAIL"
+      ? Array.from(
+          new Set(
+            [
+              ...(Array.isArray(payload.threadIds) ? payload.threadIds : []),
+              payload.threadId,
+            ].filter((threadId): threadId is string => Boolean(threadId)),
+          ),
+        ).length || 1
+      : 1;
+
   return {
+    affectedCount,
     afterState: draft.afterState,
     beforeState: draft.beforeState,
     createdAt: draft.createdAt.toISOString(),
     executedAt: draft.executedAt?.toISOString() ?? null,
-    expiresAt: draft.expiresAt.toISOString(),
     failureReason: draft.failureReason,
     id: draft.id,
     kind: draft.kind,
