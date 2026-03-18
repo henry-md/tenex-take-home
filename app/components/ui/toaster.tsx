@@ -6,6 +6,7 @@ export function AppToaster() {
   return (
     <Toaster
       closeButton
+      expand
       position="bottom-right"
       toastOptions={{
         classNames: {

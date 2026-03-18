@@ -85,6 +85,13 @@ function moveBucket(
   return nextBuckets;
 }
 
+function isDragExemptTarget(target: EventTarget | null) {
+  return (
+    target instanceof HTMLElement &&
+    Boolean(target.closest('textarea, [data-drag-exempt="true"]'))
+  );
+}
+
 export function BucketSettings({
   initialBuckets,
   showDebugCacheControls,
@@ -284,6 +291,29 @@ export function BucketSettings({
     setDropTargetBucketId(bucketId);
   }
 
+  function handleCardDragStart(
+    event: DragEvent<HTMLElement>,
+    bucketId: string,
+  ) {
+    if (isReorderingBuckets || isDragExemptTarget(event.target)) {
+      event.preventDefault();
+      return;
+    }
+
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", bucketId);
+
+    const cardBounds = event.currentTarget.getBoundingClientRect();
+
+    event.dataTransfer.setDragImage(
+      event.currentTarget,
+      event.clientX - cardBounds.left,
+      event.clientY - cardBounds.top,
+    );
+
+    handleDragStart(bucketId);
+  }
+
   function handleDragOver(event: DragEvent<HTMLElement>, bucketId: string) {
     if (!draggingBucketId || draggingBucketId === bucketId) {
       return;
@@ -384,27 +414,22 @@ export function BucketSettings({
                   isDropTarget
                     ? "border-slate-400 shadow-[0_20px_45px_rgba(15,23,42,0.12)]"
                     : "border-slate-200"
-                } ${isDragging ? "opacity-55" : ""}`}
+                } ${isDragging ? "cursor-grabbing opacity-55" : "cursor-grab"} select-none`}
+                draggable={!isReorderingBuckets}
+                onDragEnd={handleDragEnd}
                 onDragOver={(event) => handleDragOver(event, bucket.id)}
+                onDragStart={(event) => handleCardDragStart(event, bucket.id)}
                 onDrop={(event) => void handleDrop(event, bucket.id)}
               >
                 <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        aria-label={`Reorder ${bucket.name}`}
-                        className="inline-flex h-7 w-7 cursor-grab items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-slate-500 transition hover:border-slate-300 hover:bg-slate-100 hover:text-slate-700 active:cursor-grabbing"
-                        draggable={!isReorderingBuckets}
-                        onDragEnd={handleDragEnd}
-                        onDragStart={(event) => {
-                          event.dataTransfer.effectAllowed = "move";
-                          event.dataTransfer.setData("text/plain", bucket.id);
-                          handleDragStart(bucket.id);
-                        }}
-                        type="button"
+                      <span
+                        aria-hidden="true"
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-slate-500 transition"
                       >
                         <GripVertical aria-hidden="true" className="h-4 w-4" />
-                      </button>
+                      </span>
                       <h3 className="text-base font-semibold text-slate-950">
                         {bucket.name}
                       </h3>
@@ -418,6 +443,7 @@ export function BucketSettings({
                   </div>
                   <button
                     className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+                    data-drag-exempt="true"
                     disabled={!isDirty || isSaving || isReorderingBuckets}
                     onClick={() => void handleSavePrompt(bucket.id)}
                     type="button"
@@ -428,7 +454,7 @@ export function BucketSettings({
                 </div>
 
                 <AutoResizeTextarea
-                  className="mt-4 min-h-[4.5rem] w-full resize-none overflow-hidden rounded-[1rem] border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-900 outline-none transition focus:border-slate-400"
+                  className="mt-4 min-h-[4.5rem] w-full resize-none overflow-hidden rounded-[1rem] border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-900 outline-none transition focus:border-slate-400 select-text"
                   onChange={(event) =>
                     setDraftPrompts((current) => ({
                       ...current,

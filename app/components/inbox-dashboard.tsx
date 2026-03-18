@@ -64,6 +64,8 @@ const BUCKET_TONES: Record<string, BucketTone> = {
   },
 };
 
+const INBOX_LOAD_TOAST_DURATION_MS = 120_000;
+
 function formatThreadTimestamp(value: string | null) {
   if (!value) {
     return "";
@@ -132,6 +134,10 @@ function ThreadRow({ thread }: { thread: InboxThreadItem }) {
 }
 
 type InboxHomepageResponse = {
+  gmailFetch: {
+    durationMs: number;
+    fetchedThreadCount: number;
+  };
   inbox: InboxHomepageData;
   sorting: {
     cacheHit: boolean;
@@ -140,7 +146,7 @@ type InboxHomepageResponse = {
   };
 };
 
-function formatSortDuration(durationMs: number) {
+function formatDuration(durationMs: number) {
   if (durationMs < 1000) {
     return `${durationMs}ms`;
   }
@@ -148,10 +154,14 @@ function formatSortDuration(durationMs: number) {
   return `${(durationMs / 1000).toFixed(durationMs >= 10_000 ? 0 : 1)}s`;
 }
 
-function showSortingCompleteToast(sortedEmailCount: number, durationMs: number) {
+function showInboxLoadToasts(payload: InboxHomepageResponse) {
   toast.success(
-    `${sortedEmailCount} emails sorted in ${formatSortDuration(durationMs)}.`,
-    { duration: Infinity },
+    `Fetched ${payload.gmailFetch.fetchedThreadCount} Gmail thread${payload.gmailFetch.fetchedThreadCount === 1 ? "" : "s"} in ${formatDuration(payload.gmailFetch.durationMs)}.`,
+    { duration: INBOX_LOAD_TOAST_DURATION_MS },
+  );
+  toast.success(
+    `Inbox sorting finished in ${formatDuration(payload.sorting.durationMs)}${payload.sorting.cacheHit ? " (cache hit)." : "."}`,
+    { duration: INBOX_LOAD_TOAST_DURATION_MS },
   );
 }
 
@@ -194,10 +204,7 @@ export function InboxDashboard({
       });
 
       if (options?.showSuccessToast) {
-        showSortingCompleteToast(
-          payload.sorting.sortedEmailCount,
-          payload.sorting.durationMs,
-        );
+        showInboxLoadToasts(payload);
       }
     } catch (error) {
       const message =
@@ -241,10 +248,7 @@ export function InboxDashboard({
           setInbox(payload.inbox);
         });
 
-        showSortingCompleteToast(
-          payload.sorting.sortedEmailCount,
-          payload.sorting.durationMs,
-        );
+        showInboxLoadToasts(payload);
       } catch (error) {
         if (!isActive) {
           return;

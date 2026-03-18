@@ -32,21 +32,23 @@ export async function GET() {
   }
 
   try {
-    const startedAt = performance.now();
     const result = await loadInboxHomepage({
       accessToken: session.accessToken,
       ownerEmail: owner.email,
       ownerImage: owner.image,
       ownerName: owner.name,
     });
-    const durationMs = Math.round(performance.now() - startedAt);
 
     return NextResponse.json(
       {
+        gmailFetch: {
+          durationMs: result.timings.gmailFetchMs,
+          fetchedThreadCount: result.inbox.totalThreads,
+        },
         inbox: result.inbox,
         sorting: {
           cacheHit: result.cacheHit,
-          durationMs,
+          durationMs: result.timings.sortingMs,
           sortedEmailCount: result.inbox.totalThreads,
         },
       },

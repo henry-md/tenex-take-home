@@ -178,9 +178,15 @@ export type InboxHomepageData = {
   totalThreads: number;
 };
 
+export type InboxLoadTimings = {
+  gmailFetchMs: number;
+  sortingMs: number;
+};
+
 export type InboxLoadResult = {
   cacheHit: boolean;
   inbox: InboxHomepageData;
+  timings: InboxLoadTimings;
 };
 
 const MIN_INBOX_CLASSIFICATION_BATCH_SIZE = 1;
@@ -1040,9 +1046,12 @@ export async function loadInboxHomepage(input: {
   const buckets = await ensureOwnerBuckets(owner.id);
   const defaultInboxThreadLimit = getDefaultInboxThreadLimit();
   const inboxThreadLimit = await getWorkspaceInboxThreadLimit(input.ownerEmail);
+  const gmailFetchStartedAt = performance.now();
   const threads = await listRecentInboxThreads(input.accessToken, {
     maxResults: inboxThreadLimit,
   });
+  const gmailFetchMs = Math.round(performance.now() - gmailFetchStartedAt);
+  const sortingStartedAt = performance.now();
   const cacheKey = buildInboxCacheKey({
     buckets,
     defaultInboxThreadLimit,
@@ -1070,6 +1079,10 @@ export async function loadInboxHomepage(input: {
       return {
         cacheHit: true,
         inbox: parsedPayload,
+        timings: {
+          gmailFetchMs,
+          sortingMs: Math.round(performance.now() - sortingStartedAt),
+        },
       };
     }
   }
@@ -1141,5 +1154,9 @@ export async function loadInboxHomepage(input: {
   return {
     cacheHit: false,
     inbox: payload,
+    timings: {
+      gmailFetchMs,
+      sortingMs: Math.round(performance.now() - sortingStartedAt),
+    },
   };
 }

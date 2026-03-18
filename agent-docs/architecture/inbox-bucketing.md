@@ -30,3 +30,17 @@ Make the authenticated homepage inbox-first by loading the latest configured Gma
 - The assistant chat remains available, but as a collapsed lower-right dock by default.
 - The triage-board hero can be dismissed per browser via local storage.
 - Users do not open full email threads from the dashboard.
+
+## Route transition behavior
+
+- The app uses Next.js App Router route transitions, not a single long-lived client-only SPA screen.
+- `app/loading.tsx` and `app/settings/loading.tsx` provide route-level skeletons so switching between `/` and `/settings` paints immediately even while the destination route is still waiting on server work.
+- This change improves perceived tab-switch latency only. It does not remove the underlying inbox load cost when the dashboard remounts.
+
+## Inbox timing instrumentation
+
+- `loadInboxHomepage` records Gmail fetch time separately from inbox sorting time.
+- Gmail fetch time covers `listRecentInboxThreads`, including listing inbox thread ids and fetching thread summaries from Gmail.
+- Sorting time starts after Gmail data is loaded and includes cache lookup, heuristic classification, optional LLM classification, fallback assignment, and cache write.
+- `GET /api/inbox` returns both timings so the dashboard can show two success toasts: one for Gmail fetch and one for sorting.
+- A cache hit only skips reclassification work. Gmail fetch still runs first because the cache key depends on the current inbox snapshot.
