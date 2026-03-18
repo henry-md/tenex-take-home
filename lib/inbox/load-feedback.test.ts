@@ -10,6 +10,7 @@ describe("getInboxLoadToastMessages", () => {
           cacheHit: true,
           durationMs: 0,
           fetchedThreadCount: 100,
+          newThreadCount: 0,
         },
         sorting: {
           cacheHit: true,
@@ -30,6 +31,7 @@ describe("getInboxLoadToastMessages", () => {
           cacheHit: false,
           durationMs: 18_000,
           fetchedThreadCount: 100,
+          newThreadCount: 100,
         },
         sorting: {
           cacheHit: true,
@@ -50,6 +52,7 @@ describe("getInboxLoadToastMessages", () => {
           cacheHit: true,
           durationMs: 0,
           fetchedThreadCount: 100,
+          newThreadCount: 0,
         },
         sorting: {
           cacheHit: false,
@@ -60,6 +63,27 @@ describe("getInboxLoadToastMessages", () => {
     ).toEqual([
       "Gmail thread cache hit: loaded 100 threads from cache.",
       "Inbox sorting refreshed bucket memberships in 1.3s.",
+    ]);
+  });
+
+  it("reports incremental Gmail refreshes using the new thread count", () => {
+    expect(
+      getInboxLoadToastMessages({
+        gmailFetch: {
+          cacheHit: false,
+          durationMs: 4_200,
+          fetchedThreadCount: 100,
+          newThreadCount: 1,
+        },
+        sorting: {
+          cacheHit: false,
+          durationMs: 8_200,
+          sortedEmailCount: 100,
+        },
+      }),
+    ).toEqual([
+      "Synced 1 new Gmail thread in 4.2s.",
+      "Inbox sorting finished in 8.2s.",
     ]);
   });
 });

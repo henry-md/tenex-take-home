@@ -190,6 +190,7 @@ export type InboxLoadTimings = {
 export type InboxLoadResult = {
   emailCacheHit: boolean;
   inbox: InboxHomepageData;
+  newThreadCount: number;
   sortingCacheHit: boolean;
   timings: InboxLoadTimings;
 };
@@ -1412,6 +1413,10 @@ async function synchronizeInboxStateFromGmail(input: {
   const threads = await getEmailThreads(input.accessToken, threadIds);
   const payload = createEmptyInboxStatePayload(input.inboxThreadLimit);
   const threadsNeedingFullClassification: EmailThreadSummary[] = [];
+  const newThreadCount = countNewThreadIds(
+    threadIds,
+    input.existingPayload?.threadIds ?? [],
+  );
 
   payload.threadIds = threadIds;
 
@@ -1451,6 +1456,7 @@ async function synchronizeInboxStateFromGmail(input: {
   );
 
   return {
+    newThreadCount,
     payload,
     reclassified:
       hadMembershipUpdates || threadsNeedingFullClassification.length > 0,
@@ -1830,6 +1836,7 @@ export async function loadInboxHomepage(input: {
     return {
       emailCacheHit: true,
       inbox: buildHomepageDataFromState(buckets, cachedPayload),
+      newThreadCount: 0,
       sortingCacheHit: !hadMembershipUpdates,
       timings: {
         gmailFetchMs: 0,
@@ -1852,6 +1859,7 @@ export async function loadInboxHomepage(input: {
   return {
     emailCacheHit: false,
     inbox: buildHomepageDataFromState(buckets, synchronized.payload),
+    newThreadCount: synchronized.newThreadCount,
     sortingCacheHit: !synchronized.reclassified,
     timings: {
       gmailFetchMs,

@@ -51,6 +51,7 @@ export async function GET(request: Request) {
           cacheHit: result.emailCacheHit,
           durationMs: result.timings.gmailFetchMs,
           fetchedThreadCount: result.inbox.totalThreads,
+          newThreadCount: result.newThreadCount,
         },
         inbox: result.inbox,
         sorting: {

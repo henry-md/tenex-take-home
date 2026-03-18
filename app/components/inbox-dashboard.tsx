@@ -155,6 +155,7 @@ type InboxHomepageResponse = {
     cacheHit: boolean;
     durationMs: number;
     fetchedThreadCount: number;
+    newThreadCount: number;
   };
   inbox: InboxHomepageData;
   sorting: {
@@ -532,18 +533,18 @@ export function InboxDashboard({
     <section className="space-y-6">
       {activeSyncLabel ? (
         <div className="sticky top-4 z-20 flex justify-end">
-          <div className="w-full max-w-sm rounded-[1.2rem] border border-sky-200 bg-[linear-gradient(180deg,rgba(240,249,255,0.98),rgba(224,242,254,0.92))] px-4 py-3 shadow-[0_20px_50px_rgba(14,116,144,0.14)] backdrop-blur">
-            <div className="flex items-center gap-2 text-sm font-semibold text-sky-950">
+          <div className="w-full max-w-sm rounded-[1.2rem] border border-white/70 bg-[linear-gradient(135deg,rgba(255,250,240,0.98),rgba(255,255,255,0.95)_55%,rgba(254,243,199,0.92))] px-4 py-3 shadow-[0_20px_50px_rgba(15,23,42,0.12)] backdrop-blur">
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
               <LoaderCircle
                 aria-hidden="true"
-                className="h-4 w-4 animate-spin"
+                className="h-4 w-4 animate-spin text-amber-600"
                 strokeWidth={2}
               />
               <span className="min-w-0 truncate">{activeSyncLabel}</span>
             </div>
             {isSyncingNewEmail ? (
-              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-sky-100">
-                <div className="h-full w-2/5 animate-pulse rounded-full bg-sky-500" />
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/80">
+                <div className="h-full w-2/5 animate-pulse rounded-full bg-[linear-gradient(90deg,#f59e0b,#fbbf24)]" />
               </div>
             ) : null}
           </div>
@@ -646,16 +647,16 @@ export function InboxDashboard({
       {inbox ? (
         <div className="space-y-4">
           {isSorting ? (
-            <section className="rounded-[1.5rem] border border-sky-200 bg-[linear-gradient(180deg,rgba(240,249,255,0.98),rgba(224,242,254,0.92))] px-5 py-4 text-sm text-sky-900 shadow-[0_18px_45px_rgba(14,116,144,0.08)]">
+            <section className="rounded-[1.5rem] border border-white/70 bg-[linear-gradient(135deg,rgba(255,250,240,0.98),rgba(255,255,255,0.95)_50%,rgba(254,243,199,0.9))] px-5 py-4 text-sm text-slate-900 shadow-[0_18px_45px_rgba(15,23,42,0.08)]">
               <div className="flex items-center gap-3">
                 <LoaderCircle
                   aria-hidden="true"
-                  className="h-4 w-4 animate-spin"
+                  className="h-4 w-4 animate-spin text-amber-600"
                   strokeWidth={2}
                 />
                 <div className="min-w-0 flex-1">
                   <p className="font-semibold">Loading your inbox</p>
-                  <p className="text-sky-800/80">
+                  <p className="text-slate-600">
                     Fetching recent emails and grouping them into your configured buckets now.
                   </p>
                 </div>

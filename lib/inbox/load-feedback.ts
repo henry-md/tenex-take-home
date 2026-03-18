@@ -3,6 +3,7 @@ export type InboxLoadFeedback = {
     cacheHit: boolean;
     durationMs: number;
     fetchedThreadCount: number;
+    newThreadCount: number;
   };
   sorting: {
     cacheHit: boolean;
@@ -22,10 +23,16 @@ export function formatInboxLoadDuration(durationMs: number) {
 export function getInboxLoadToastMessages(payload: InboxLoadFeedback) {
   const threadCount = payload.gmailFetch.fetchedThreadCount;
   const threadLabel = `thread${threadCount === 1 ? "" : "s"}`;
+  const newThreadCount = payload.gmailFetch.newThreadCount;
+  const newThreadLabel = `thread${newThreadCount === 1 ? "" : "s"}`;
   const messages: string[] = [];
 
   if (payload.gmailFetch.cacheHit) {
     messages.push(`Gmail thread cache hit: loaded ${threadCount} ${threadLabel} from cache.`);
+  } else if (newThreadCount > 0 && newThreadCount < threadCount) {
+    messages.push(
+      `Synced ${newThreadCount} new Gmail ${newThreadLabel} in ${formatInboxLoadDuration(payload.gmailFetch.durationMs)}.`,
+    );
   } else {
     messages.push(
       `Fetched ${threadCount} Gmail ${threadLabel} in ${formatInboxLoadDuration(payload.gmailFetch.durationMs)}.`,
