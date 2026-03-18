@@ -50,6 +50,11 @@ enum OpenAIChatMessageRole {
   ASSISTANT
 }
 
+enum OpenAIRateLimitWindow {
+  MINUTE
+  DAY
+}
+
 model User {
   id                 String              @id @default(cuid())
   email              String              @unique
@@ -135,4 +140,16 @@ model OpenAIChatMessage {
   owner        User                  @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
   @@index([ownerId, createdAt])
+}
+
+model OpenAIRateLimitBucket {
+  ownerEmail  String
+  windowType  OpenAIRateLimitWindow
+  windowStart DateTime
+  count       Int                    @default(0)
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+
+  @@id([ownerEmail, windowType, windowStart])
+  @@index([windowType, windowStart])
 }

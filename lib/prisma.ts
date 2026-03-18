@@ -27,7 +27,8 @@ function hasRequiredModels(client: PrismaClient | undefined) {
     client &&
       "integrationActionDraft" in client &&
       "workspaceApprovalPreference" in client &&
-      "openAIChatMessage" in client,
+      "openAIChatMessage" in client &&
+      "openAIRateLimitBucket" in client,
   );
 }
 

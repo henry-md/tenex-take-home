@@ -1,6 +1,8 @@
 import OpenAI from "openai";
 import type {
   FunctionTool,
+  Response,
+  ResponseCreateParamsNonStreaming,
   ResponseFunctionToolCall,
   ToolChoiceFunction,
 } from "openai/resources/responses/responses";
@@ -14,6 +16,7 @@ import {
   searchEmailThreads,
 } from "@/lib/google-workspace/gmail";
 import { GoogleApiError } from "@/lib/google-workspace/google-api";
+import { reserveOpenAICall } from "@/lib/openai/rate-limit";
 
 export type ChatMessage = {
   content: string;
@@ -794,7 +797,15 @@ export async function runGoogleWorkspaceAssistant(input: {
   const executedToolCalls: ToolCallSummary[] = [];
   const lastUserMessage = getLastUserMessage(input.messages);
 
-  let response = await input.client.responses.create({
+  const createResponse = async (
+    responseInput: ResponseCreateParamsNonStreaming,
+  ): Promise<Response> => {
+    await reserveOpenAICall(input.ownerEmail);
+
+    return input.client.responses.create(responseInput);
+  };
+
+  let response = await createResponse({
     model: input.model,
     input: [
       {
@@ -907,7 +918,7 @@ export async function runGoogleWorkspaceAssistant(input: {
       ...toolResults.map((toolResult) => toolResult.summary),
     );
 
-    response = await input.client.responses.create({
+    response = await createResponse({
       model: input.model,
       previous_response_id: response.id,
       input: toolOutputs,
