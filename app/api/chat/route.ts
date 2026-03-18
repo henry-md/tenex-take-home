@@ -58,13 +58,18 @@ export async function GET() {
       },
     );
   } catch (error) {
-    console.error("Loading persisted chat failed", error);
+    console.error("Loading persisted chat failed", {
+      error,
+      ownerEmail: owner.email,
+    });
 
     return NextResponse.json(
+      { messages: [] },
       {
-        error: "Unable to load chat history.",
+        headers: {
+          "Cache-Control": "no-cache, no-transform",
+        },
       },
-      { status: 500 },
     );
   }
 }
@@ -156,35 +161,79 @@ export async function POST(request: Request) {
       role: "user",
     });
 
-    const messages = await listAssistantChatMessages(owner.email);
+    let messages: ChatMessage[];
 
-    const assistantResponse = await runGoogleWorkspaceAssistant({
-      accessToken: session.accessToken,
-      client,
-      messages,
-      model,
-      ownerEmail: owner.email,
-    });
-
-    const assistantMessage = await createPersistedChatMessage({
-      content: assistantResponse.content,
-      owner,
-      role: "assistant",
-      toolCalls: assistantResponse.toolCalls,
-    });
-
-    return NextResponse.json(
-      {
-        assistantMessage,
-        content: assistantResponse.content,
-        toolCalls: assistantResponse.toolCalls,
-      },
-      {
-        headers: {
-          "Cache-Control": "no-cache, no-transform",
+    try {
+      messages = await listAssistantChatMessages(owner.email);
+    } catch (historyError) {
+      console.error("Loading assistant chat history failed", {
+        error: historyError,
+        ownerEmail: owner.email,
+      });
+      messages = [
+        {
+          content: trimmedMessage,
+          role: "user",
         },
-      },
-    );
+      ];
+    }
+
+    try {
+      const assistantResponse = await runGoogleWorkspaceAssistant({
+        accessToken: session.accessToken,
+        client,
+        messages,
+        model,
+        ownerEmail: owner.email,
+      });
+
+      const assistantMessage = await createPersistedChatMessage({
+        content: assistantResponse.content,
+        emailDisplay: assistantResponse.emailDisplay,
+        emailResults: assistantResponse.emailResults,
+        owner,
+        role: "assistant",
+        toolCalls: assistantResponse.toolCalls,
+      });
+
+      return NextResponse.json(
+        {
+          assistantMessage,
+          content: assistantResponse.content,
+          toolCalls: assistantResponse.toolCalls,
+        },
+        {
+          headers: {
+            "Cache-Control": "no-cache, no-transform",
+          },
+        },
+      );
+    } catch (assistantError) {
+      console.error("Assistant execution failed after user message persisted", {
+        error: assistantError,
+        ownerEmail: owner.email,
+      });
+
+      const fallbackMessage = await createPersistedChatMessage({
+        content:
+          "I hit an internal error before I could finish that reply. Please try again.",
+        owner,
+        role: "assistant",
+      });
+
+      return NextResponse.json(
+        {
+          assistantMessage: fallbackMessage,
+          content: fallbackMessage.content,
+          toolCalls: [],
+        },
+        {
+          headers: {
+            "Cache-Control": "no-cache, no-transform",
+          },
+        },
+      );
+    }
   } catch (error) {
     console.error("OpenAI chat request failed", error);
 

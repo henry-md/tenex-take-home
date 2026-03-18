@@ -20,14 +20,32 @@ export type ChatMessage = {
   role: "assistant" | "user";
 };
 
+export type EmailToolResult = {
+  body: string;
+  lastMessageAt: string | null;
+  sender: string | null;
+  snippet: string;
+  subject: string;
+  threadId: string;
+};
+
+export type EmailDisplayDirective = {
+  maxCount?: number;
+  show: boolean;
+};
+
 export type ToolCallSummary = {
   arguments: Record<string, unknown>;
+  emailDisplay?: EmailDisplayDirective;
+  emailResults?: EmailToolResult[];
   name: string;
   status: "error" | "ok";
 };
 
 export type AssistantRunResult = {
   content: string;
+  emailDisplay?: EmailDisplayDirective;
+  emailResults?: EmailToolResult[];
   toolCalls: ToolCallSummary[];
 };
 
@@ -58,6 +76,112 @@ function getLastUserMessage(messages: ChatMessage[]) {
   return [...messages]
     .reverse()
     .find((message) => message.role === "user");
+}
+
+function getRequestedEmailCardCount(message: string) {
+  const matchedCount = message.match(/\b(\d+)\b/);
+
+  if (!matchedCount) {
+    return undefined;
+  }
+
+  const parsedCount = Number.parseInt(matchedCount[1], 10);
+
+  if (Number.isNaN(parsedCount)) {
+    return undefined;
+  }
+
+  return Math.min(Math.max(parsedCount, 1), 10);
+}
+
+function inferEmailDisplayDirective(
+  lastUserMessage: ChatMessage | undefined,
+  executedToolCalls: ToolCallSummary[],
+) {
+  if (!lastUserMessage) {
+    return undefined;
+  }
+
+  const hasEmailResults = executedToolCalls.some(
+    (toolCall) => (toolCall.emailResults?.length ?? 0) > 0,
+  );
+
+  if (!hasEmailResults || !LAST_EMAIL_PATTERN.test(lastUserMessage.content)) {
+    return undefined;
+  }
+
+  return {
+    maxCount: getRequestedEmailCardCount(lastUserMessage.content),
+    show: true,
+  } satisfies EmailDisplayDirective;
+}
+
+function buildEmailCardIntro(
+  lastUserMessage: ChatMessage | undefined,
+  emailResults: EmailToolResult[],
+) {
+  const count = emailResults.length;
+  const message = lastUserMessage?.content.toLowerCase() ?? "";
+
+  if (count === 1) {
+    if (/\b(latest|last|recent|most recent)\b/.test(message)) {
+      return "Here is your most recent email.";
+    }
+
+    return "Here is the email you asked for.";
+  }
+
+  if (/\b(latest|last|recent|most recent)\b/.test(message)) {
+    return `Here are your last ${count} emails.`;
+  }
+
+  return `Here are the ${count} emails you asked for.`;
+}
+
+function shouldKeepNativeEmailIntro(
+  content: string,
+  emailResults: EmailToolResult[],
+) {
+  const trimmedContent = content.trim();
+
+  if (!trimmedContent) {
+    return false;
+  }
+
+  if (trimmedContent.length > 140 || trimmedContent.includes("\n")) {
+    return false;
+  }
+
+  const normalizedContent = trimmedContent.toLowerCase();
+
+  if (/\b(from|date|subject):\b/.test(normalizedContent)) {
+    return false;
+  }
+
+  return !emailResults.some(
+    (email) =>
+      normalizedContent.includes(email.subject.toLowerCase()) ||
+      (email.sender
+        ? normalizedContent.includes(email.sender.toLowerCase())
+        : false),
+  );
+}
+
+function normalizeAssistantContentForNativeEmailCards(input: {
+  content: string;
+  emailDisplay?: EmailDisplayDirective;
+  emailResults?: EmailToolResult[];
+  lastUserMessage?: ChatMessage;
+}) {
+  if (!input.emailDisplay?.show || !input.emailResults?.length) {
+    return input.content || "I could not produce a response.";
+  }
+
+  if (shouldKeepNativeEmailIntro(input.content, input.emailResults)) {
+    return input.content.trim();
+  }
+
+  return buildEmailCardIntro(input.lastUserMessage, input.emailResults);
 }
 
 function toResponseInputMessage(message: ChatMessage) {
@@ -161,6 +285,28 @@ const GOOGLE_WORKSPACE_TOOLS: FunctionTool[] = [
         },
       },
       required: ["eventId"],
+    },
+  },
+  {
+    type: "function",
+    name: "set_chat_response_mode",
+    description:
+      "Control whether the UI should render structured email cards for this assistant reply. Use this after Gmail read tools when the user asked to see or read emails in chat. Do not use it for Gmail mutations.",
+    strict: false,
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        maxCount: {
+          type: "integer",
+          minimum: 1,
+          maximum: 10,
+        },
+        showEmailResults: {
+          type: "boolean",
+        },
+      },
+      required: ["showEmailResults"],
     },
   },
   {
@@ -269,6 +415,11 @@ function getSystemPrompt() {
     "You are Inbox Concierge, a concise Google Workspace assistant for Gmail triage and calendar coordination.",
     "Use the available tools when the user asks about concrete Gmail threads, labels, calendar events, or actions.",
     "If the user asks about their own Gmail or Calendar data, do not answer from memory or with a capability disclaimer. Use a read tool first unless the request is too ambiguous to execute.",
+    "The UI can render structured email cards from Gmail read tool results.",
+    "Do not restate subject, sender, timestamp, or snippet in prose unless the user explicitly asks for a text-only rendering.",
+    "If the user wants emails shown in the chat, call set_chat_response_mode with showEmailResults=true and keep your prose to a single short framing sentence.",
+    "When showEmailResults=true, do not enumerate emails, use bullets, or repeat subject lines, senders, dates, snippets, or message bodies in prose.",
+    "If Gmail data is only supporting context, do not call set_chat_response_mode.",
     "All Gmail and Calendar writes must go through prepare_* tools.",
     "If one user request modifies multiple Gmail threads, prepare that as a single prepare_email_action call with all target ids in threadIds.",
     "Only tell the user to review the approval queue when a prepare_* tool returns a pending status or requiresApproval=true.",
@@ -487,6 +638,10 @@ async function handleToolCall(
       return {
         drafts: await listPendingActionDrafts(context.ownerEmail),
       };
+    case "set_chat_response_mode":
+      return {
+        ok: true,
+      };
     default:
       throw new Error(`Unsupported tool: ${toolCall.name}`);
   }
@@ -527,6 +682,104 @@ function getRequestedEmailTargetCount(toolCall: ResponseFunctionToolCall) {
   return threadIds.length;
 }
 
+function extractEmailResults(
+  toolName: string,
+  output: unknown,
+): EmailToolResult[] | undefined {
+  if (toolName === "search_email_threads") {
+    const candidate = output as {
+      threads?: Array<{
+        body?: unknown;
+        id?: unknown;
+        lastMessageAt?: unknown;
+        sender?: unknown;
+        snippet?: unknown;
+        subject?: unknown;
+      }>;
+    };
+
+    const threads = candidate.threads?.flatMap((thread) => {
+      if (
+        typeof thread?.id !== "string" ||
+        typeof thread.subject !== "string" ||
+        typeof thread.snippet !== "string"
+      ) {
+        return [];
+      }
+
+      return [
+        {
+          body:
+            typeof thread.body === "string" && thread.body.trim().length
+              ? thread.body
+              : thread.snippet,
+          lastMessageAt:
+            typeof thread.lastMessageAt === "string" ? thread.lastMessageAt : null,
+          sender: typeof thread.sender === "string" ? thread.sender : null,
+          snippet: thread.snippet,
+          subject: thread.subject,
+          threadId: thread.id,
+        } satisfies EmailToolResult,
+      ];
+    });
+
+    return threads?.length ? threads : undefined;
+  }
+
+  if (toolName === "get_email_thread") {
+    const thread = output as {
+      body?: unknown;
+      id?: unknown;
+      lastMessageAt?: unknown;
+      sender?: unknown;
+      snippet?: unknown;
+      subject?: unknown;
+    };
+
+    if (
+      typeof thread.id !== "string" ||
+      typeof thread.subject !== "string" ||
+      typeof thread.snippet !== "string"
+    ) {
+      return undefined;
+    }
+
+    return [
+      {
+        body:
+          typeof thread.body === "string" && thread.body.trim().length
+            ? thread.body
+            : thread.snippet,
+        lastMessageAt:
+          typeof thread.lastMessageAt === "string" ? thread.lastMessageAt : null,
+        sender: typeof thread.sender === "string" ? thread.sender : null,
+        snippet: thread.snippet,
+        subject: thread.subject,
+        threadId: thread.id,
+      },
+    ];
+  }
+
+  return undefined;
+}
+
+function extractEmailDisplayDirective(
+  toolName: string,
+  argumentsObject: Record<string, unknown>,
+): EmailDisplayDirective | undefined {
+  if (toolName !== "set_chat_response_mode") {
+    return undefined;
+  }
+
+  return {
+    maxCount:
+      typeof argumentsObject.maxCount === "number"
+        ? Math.min(Math.max(argumentsObject.maxCount, 1), 10)
+        : undefined,
+    show: Boolean(argumentsObject.showEmailResults),
+  };
+}
+
 export async function runGoogleWorkspaceAssistant(input: {
   accessToken: string;
   client: OpenAI;
@@ -539,6 +792,7 @@ export async function runGoogleWorkspaceAssistant(input: {
     ownerEmail: input.ownerEmail,
   };
   const executedToolCalls: ToolCallSummary[] = [];
+  const lastUserMessage = getLastUserMessage(input.messages);
 
   let response = await input.client.responses.create({
     model: input.model,
@@ -565,8 +819,27 @@ export async function runGoogleWorkspaceAssistant(input: {
     );
 
     if (!toolCalls.length) {
-      return {
+      const emailDisplay =
+        [...executedToolCalls]
+        .reverse()
+        .find((toolCall) => toolCall.emailDisplay)?.emailDisplay ??
+        inferEmailDisplayDirective(lastUserMessage, executedToolCalls);
+      const emailResults = emailDisplay?.show
+        ? executedToolCalls
+            .flatMap((toolCall) => toolCall.emailResults ?? [])
+            .slice(0, emailDisplay.maxCount ?? undefined)
+        : undefined;
+      const content = normalizeAssistantContentForNativeEmailCards({
         content: response.output_text || "I could not produce a response.",
+        emailDisplay,
+        emailResults,
+        lastUserMessage,
+      });
+
+      return {
+        content,
+        emailDisplay,
+        emailResults: emailResults?.length ? emailResults : undefined,
         toolCalls: executedToolCalls,
       };
     }
@@ -591,6 +864,11 @@ export async function runGoogleWorkspaceAssistant(input: {
           return {
             summary: {
               arguments: toolArguments,
+              emailDisplay: extractEmailDisplayDirective(
+                toolCall.name,
+                toolArguments,
+              ),
+              emailResults: extractEmailResults(toolCall.name, output),
               name: toolCall.name,
               status: "ok" as const,
             },
@@ -639,6 +917,8 @@ export async function runGoogleWorkspaceAssistant(input: {
 
   return {
     content: "I hit the tool-call limit before finishing that request.",
+    emailDisplay: undefined,
+    emailResults: undefined,
     toolCalls: executedToolCalls,
   };
 }

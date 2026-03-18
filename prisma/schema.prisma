@@ -123,14 +123,16 @@ model WorkspaceApprovalPreference {
 }
 
 model OpenAIChatMessage {
-  id        String                @id @default(cuid())
-  role      OpenAIChatMessageRole
-  content   String
-  toolCalls Json?
-  createdAt DateTime              @default(now())
-  updatedAt DateTime              @updatedAt
-  ownerId   String
-  owner     User                  @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  id           String                @id @default(cuid())
+  role         OpenAIChatMessageRole
+  content      String
+  toolCalls    Json?
+  emailDisplay Json?
+  emailResults Json?
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+  ownerId      String
+  owner        User                  @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
   @@index([ownerId, createdAt])
 }

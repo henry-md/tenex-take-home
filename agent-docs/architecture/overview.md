@@ -29,6 +29,8 @@ The app is a Next.js App Router project with three active layers:
 - `/api/chat` returns JSON, not plain text.
 - The payload contains:
   - `content`: the assistant message shown in chat.
+  - `emailDisplay`: optional structured rendering instructions for email cards attached to that assistant message.
+  - `emailResults`: optional persisted email objects for that assistant message so email cards survive refresh.
   - `toolCalls`: a compact list of tool names, parsed arguments, and success/error status for the UI's optional tool-call inspector.
 
 ### Design rules
@@ -44,3 +46,4 @@ The app is a Next.js App Router project with three active layers:
 - `agent-docs/system.md`
 - `agent-docs/architecture/google-workspace-tools.md`
 - `agent-docs/architecture/tool-calling.md`
+- `agent-docs/architecture/chat-email-rendering.md`

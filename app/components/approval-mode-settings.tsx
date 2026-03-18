@@ -2,16 +2,12 @@
 
 import Link from "next/link";
 import { useRef, useState } from "react";
+import { toast } from "sonner";
 
 import {
   APPROVAL_MODE_OPTIONS,
   type ApprovalModeOption,
 } from "@/lib/google-workspace/approval-mode-options";
-
-type Toast = {
-  id: string;
-  message: string;
-};
 
 function getApprovalModeClasses(
   mode: ApprovalModeOption["mode"],
@@ -83,26 +79,7 @@ export function ApprovalModeSettings({
   initialApprovalMode,
 }: ApprovalModeSettingsProps) {
   const [approvalMode, setApprovalMode] = useState(initialApprovalMode);
-  const [toasts, setToasts] = useState<Toast[]>([]);
   const approvalModeRequestId = useRef(0);
-
-  function showToast(message: string) {
-    const toastId = crypto.randomUUID();
-
-    setToasts((currentToasts) => [
-      ...currentToasts,
-      {
-        id: toastId,
-        message,
-      },
-    ]);
-
-    window.setTimeout(() => {
-      setToasts((currentToasts) =>
-        currentToasts.filter((toast) => toast.id !== toastId),
-      );
-    }, 4000);
-  }
 
   async function handleApprovalModeChange(mode: ApprovalModeOption["mode"]) {
     const nextMode =
@@ -151,7 +128,7 @@ export function ApprovalModeSettings({
       }
 
       setApprovalMode(previousMode);
-      showToast(
+      toast.error(
         error instanceof Error ? error.message : "Unable to update approval mode.",
       );
     } finally {
@@ -243,17 +220,6 @@ export function ApprovalModeSettings({
             </div>
           </div>
         </section>
-      </div>
-
-      <div className="pointer-events-none fixed right-6 top-6 z-50 flex w-full max-w-sm flex-col gap-3">
-        {toasts.map((toast) => (
-          <div
-            key={toast.id}
-            className="rounded-[1.25rem] border border-rose-200 bg-white/95 px-4 py-3 text-sm text-slate-800 shadow-[0_20px_50px_rgba(15,23,42,0.16)] backdrop-blur"
-          >
-            {toast.message}
-          </div>
-        ))}
       </div>
     </section>
   );

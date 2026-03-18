@@ -85,9 +85,17 @@ For Gmail bulk approval:
 ## UI integration
 
 - The chat UI renders `content` as the assistant message.
+- The assistant can additionally call `set_chat_response_mode` to tell the UI to render structured email cards for that reply.
+- Structured email cards must be backed by server-owned `emailResults` persisted on the chat message, not by parsing assistant prose.
 - The UI may also render `toolCalls` for debugging or transparency.
 - The approval queue reads pending drafts from `/api/action-drafts`.
 - Queue cards should stay minimal and user-facing. Do not expose server-only implementation details there.
+
+## Email rendering rule
+
+- When the UI is going to render email cards, the system prompt should tell the model not to repeat subject, sender, timestamp, or snippet in plain text.
+- Use email card rendering only when the user asked to see or read emails in chat.
+- If Gmail reads are only intermediate context for another action or answer, do not enable email card rendering.
 
 ## Extension rules
 
