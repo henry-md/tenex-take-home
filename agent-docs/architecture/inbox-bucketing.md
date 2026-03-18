@@ -30,6 +30,7 @@ Make the authenticated homepage inbox-first by loading the latest configured Gma
 - The assistant chat remains available, but as a collapsed lower-right dock by default.
 - The triage-board hero can be dismissed per browser via local storage.
 - Users do not open full email threads from the dashboard.
+- After the initial inbox sort, the dashboard passively polls for newer inbox activity and shows a manual refresh prompt with the count of currently unsorted inbox items. It never auto-refreshes the board.
 
 ## Route transition behavior
 

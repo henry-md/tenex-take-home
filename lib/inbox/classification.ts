@@ -189,6 +189,12 @@ export type InboxLoadResult = {
   timings: InboxLoadTimings;
 };
 
+export type InboxRefreshStatus = {
+  checkedAt: string;
+  hasUpdates: boolean;
+  unsortedThreadCount: number;
+};
+
 const MIN_INBOX_CLASSIFICATION_BATCH_SIZE = 1;
 const MAX_INBOX_CLASSIFICATION_BATCH_SIZE = 100;
 const FALLBACK_INBOX_CLASSIFICATION_BATCH_SIZE = 40;
@@ -293,6 +299,20 @@ function parseCachedInboxHomepageData(value: unknown): InboxHomepageData | null 
   }
 
   return candidate as InboxHomepageData;
+}
+
+function flattenInboxThreads(inbox: InboxHomepageData) {
+  return inbox.buckets.flatMap((bucket) => bucket.threads);
+}
+
+function toTimestamp(value: string | null) {
+  if (!value) {
+    return 0;
+  }
+
+  const timestamp = new Date(value).getTime();
+
+  return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
 function getBucketSortKey(name: string) {
@@ -1030,6 +1050,92 @@ export async function clearInboxClassificationCache(ownerEmail: string) {
   });
 
   return result.count;
+}
+
+export async function hasInboxClassificationCache(ownerEmail: string) {
+  const owner = await prisma.user.findUnique({
+    where: {
+      email: ownerEmail,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!owner) {
+    return false;
+  }
+
+  const cacheCount = await prisma.inboxClassificationCache.count({
+    where: {
+      ownerId: owner.id,
+    },
+  });
+
+  return cacheCount > 0;
+}
+
+export async function getInboxRefreshStatus(input: {
+  accessToken: string;
+  ownerEmail: string;
+  ownerImage?: string | null;
+  ownerName?: string | null;
+}): Promise<InboxRefreshStatus> {
+  const owner = await upsertAppUser({
+    email: input.ownerEmail,
+    image: input.ownerImage,
+    name: input.ownerName,
+  });
+  const latestCache = await prisma.inboxClassificationCache.findFirst({
+    where: {
+      ownerId: owner.id,
+    },
+    orderBy: {
+      updatedAt: "desc",
+    },
+    select: {
+      payload: true,
+    },
+  });
+  const parsedPayload = latestCache
+    ? parseCachedInboxHomepageData(latestCache.payload)
+    : null;
+
+  if (!parsedPayload) {
+    return {
+      checkedAt: new Date().toISOString(),
+      hasUpdates: false,
+      unsortedThreadCount: 0,
+    };
+  }
+
+  const sortedThreadMap = new Map(
+    flattenInboxThreads(parsedPayload).map((thread) => [thread.threadId, thread.lastMessageAt]),
+  );
+  const inboxThreadLimit = await getWorkspaceInboxThreadLimit(input.ownerEmail);
+  const latestThreads = await listRecentInboxThreads(input.accessToken, {
+    maxResults: inboxThreadLimit,
+  });
+  let unsortedThreadCount = 0;
+
+  for (const thread of latestThreads) {
+    const sortedLastMessageAt = sortedThreadMap.get(thread.id);
+
+    if (!sortedLastMessageAt) {
+      unsortedThreadCount += 1;
+      continue;
+    }
+
+    if (toTimestamp(thread.lastMessageAt) > toTimestamp(sortedLastMessageAt)) {
+      unsortedThreadCount += 1;
+    }
+  }
+
+  return {
+    checkedAt: new Date().toISOString(),
+    hasUpdates: unsortedThreadCount > 0,
+    unsortedThreadCount,
+  };
 }
 
 export async function loadInboxHomepage(input: {

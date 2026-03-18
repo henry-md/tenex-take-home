@@ -9,7 +9,10 @@ import {
   serializeWorkspaceApprovalMode,
 } from "@/lib/google-workspace/approval-mode";
 import { getWorkspaceInboxThreadLimit } from "@/lib/google-workspace/inbox-thread-limit";
-import { listBucketSettings } from "@/lib/inbox/classification";
+import {
+  hasInboxClassificationCache,
+  listBucketSettings,
+} from "@/lib/inbox/classification";
 
 export default async function SettingsPage() {
   const session = await getServerSession(authOptions);
@@ -19,7 +22,7 @@ export default async function SettingsPage() {
     redirect("/");
   }
 
-  const [approvalMode, inboxThreadLimit, buckets] = await Promise.all([
+  const [approvalMode, inboxThreadLimit, buckets, hasInboxCache] = await Promise.all([
     getWorkspaceApprovalMode(ownerEmail).then(serializeWorkspaceApprovalMode),
     getWorkspaceInboxThreadLimit(ownerEmail),
     listBucketSettings({
@@ -27,6 +30,7 @@ export default async function SettingsPage() {
       ownerImage: session.user?.image,
       ownerName: session.user?.name,
     }),
+    hasInboxClassificationCache(ownerEmail),
   ]);
   const showDebugCacheControls = process.env.DEBUG_UI === "true";
 
@@ -38,6 +42,7 @@ export default async function SettingsPage() {
           initialInboxThreadLimit={inboxThreadLimit}
         />
         <BucketSettings
+          initialHasInboxCache={hasInboxCache}
           initialBuckets={buckets}
           showDebugCacheControls={showDebugCacheControls}
         />

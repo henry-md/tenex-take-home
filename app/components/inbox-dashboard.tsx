@@ -3,12 +3,14 @@
 import {
   startTransition,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import {
   ChevronRight,
   Inbox,
   LoaderCircle,
+  MailPlus,
   RefreshCw,
   Sparkles,
   X,
@@ -65,6 +67,7 @@ const BUCKET_TONES: Record<string, BucketTone> = {
 };
 
 const INBOX_LOAD_TOAST_DURATION_MS = 120_000;
+const INBOX_STATUS_POLL_INTERVAL_MS = 60_000;
 
 function formatThreadTimestamp(value: string | null) {
   if (!value) {
@@ -146,6 +149,12 @@ type InboxHomepageResponse = {
   };
 };
 
+type InboxRefreshStatusResponse = {
+  checkedAt: string;
+  hasUpdates: boolean;
+  unsortedThreadCount: number;
+};
+
 function formatDuration(durationMs: number) {
   if (durationMs < 1000) {
     return `${durationMs}ms`;
@@ -166,7 +175,9 @@ function showInboxLoadToasts(payload: InboxHomepageResponse) {
 }
 
 async function fetchInboxHomepage() {
-  const response = await fetch("/api/inbox");
+  const response = await fetch("/api/inbox", {
+    cache: "no-store",
+  });
 
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as
@@ -181,16 +192,36 @@ async function fetchInboxHomepage() {
   return (await response.json()) as InboxHomepageResponse;
 }
 
+async function fetchInboxRefreshStatus() {
+  const response = await fetch("/api/inbox-status", {
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as
+      | {
+          error?: string;
+        }
+      | null;
+
+    throw new Error(payload?.error ?? "Unable to check for inbox updates.");
+  }
+
+  return (await response.json()) as InboxRefreshStatusResponse;
+}
+
 export function InboxDashboard({
   firstName,
   initialInboxThreadLimit,
 }: InboxDashboardProps) {
+  const initialLoadStartedRef = useRef(false);
   const [inbox, setInbox] = useState<InboxHomepageData | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isHeroVisible, setIsHeroVisible] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSorting, setIsSorting] = useState(true);
+  const [unsortedThreadCount, setUnsortedThreadCount] = useState(0);
 
   async function loadInbox(options?: { showSuccessToast?: boolean; silent?: boolean }) {
     setIsSorting(true);
@@ -201,6 +232,7 @@ export function InboxDashboard({
       startTransition(() => {
         setErrorMessage(null);
         setInbox(payload.inbox);
+        setUnsortedThreadCount(0);
       });
 
       if (options?.showSuccessToast) {
@@ -231,6 +263,14 @@ export function InboxDashboard({
   }, []);
 
   useEffect(() => {
+    // Prevent the development Strict Mode effect replay from issuing a second
+    // inbox load that immediately recreates and reuses the cache we just cleared.
+    if (initialLoadStartedRef.current) {
+      return;
+    }
+
+    initialLoadStartedRef.current = true;
+
     let isActive = true;
 
     void (async () => {
@@ -274,6 +314,55 @@ export function InboxDashboard({
     };
   }, []);
 
+  useEffect(() => {
+    if (!inbox) {
+      return;
+    }
+
+    let isActive = true;
+
+    async function checkForUpdates() {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+
+      try {
+        const payload = await fetchInboxRefreshStatus();
+
+        if (!isActive) {
+          return;
+        }
+
+        setUnsortedThreadCount(payload.unsortedThreadCount);
+      } catch (error) {
+        if (!isActive) {
+          return;
+        }
+
+        console.error("Checking inbox refresh status failed", error);
+      }
+    }
+
+    const intervalId = window.setInterval(() => {
+      void checkForUpdates();
+    }, INBOX_STATUS_POLL_INTERVAL_MS);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+
+      void checkForUpdates();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      isActive = false;
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [inbox]);
+
   async function handleRefresh() {
     if (isRefreshing) {
       return;
@@ -292,6 +381,8 @@ export function InboxDashboard({
     inbox?.buckets.find((bucket) => bucket.name === "Important")?.count ?? 0;
   const configuredThreadLimit =
     inbox?.configuredThreadLimit ?? initialInboxThreadLimit;
+  const unsortedThreadLabel =
+    unsortedThreadCount === 1 ? "1 email" : `${unsortedThreadCount} emails`;
 
   return (
     <section className="space-y-6">
@@ -390,6 +481,39 @@ export function InboxDashboard({
       {errorMessage && !inbox ? (
         <section className="rounded-[1.75rem] border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700">
           {errorMessage}
+        </section>
+      ) : null}
+
+      {unsortedThreadCount > 0 ? (
+        <section className="flex flex-col gap-4 rounded-[1.75rem] border border-amber-200 bg-amber-50/90 p-5 shadow-[0_24px_60px_rgba(15,23,42,0.05)] sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700">
+              <MailPlus aria-hidden="true" className="h-5 w-5" strokeWidth={2} />
+            </span>
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-amber-950">
+                {unsortedThreadLabel} not currently sorted
+              </p>
+              <p className="text-sm text-amber-800">
+                New inbox activity arrived after the last sort. Refresh when you are
+                ready to re-fetch and run classification again.
+              </p>
+            </div>
+          </div>
+
+          <button
+            className="inline-flex items-center justify-center gap-2 rounded-full border border-amber-300 bg-white px-4 py-2.5 text-sm font-medium text-amber-900 transition hover:border-amber-400 hover:bg-amber-100/40 disabled:cursor-not-allowed disabled:text-amber-500"
+            disabled={isRefreshing}
+            onClick={() => void handleRefresh()}
+            type="button"
+          >
+            <RefreshCw
+              aria-hidden="true"
+              className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`}
+              strokeWidth={2}
+            />
+            Re-fetch and sort
+          </button>
         </section>
       ) : null}
 

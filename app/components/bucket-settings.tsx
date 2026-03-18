@@ -24,6 +24,7 @@ import { toast } from "sonner";
 import type { BucketSetting } from "@/lib/inbox/classification";
 
 type BucketSettingsProps = {
+  initialHasInboxCache: boolean;
   initialBuckets: BucketSetting[];
   showDebugCacheControls: boolean;
 };
@@ -93,6 +94,7 @@ function isDragExemptTarget(target: EventTarget | null) {
 }
 
 export function BucketSettings({
+  initialHasInboxCache,
   initialBuckets,
   showDebugCacheControls,
 }: BucketSettingsProps) {
@@ -103,6 +105,7 @@ export function BucketSettings({
   const [newBucketName, setNewBucketName] = useState("");
   const [newBucketPrompt, setNewBucketPrompt] = useState("");
   const [isCreatingBucket, setIsCreatingBucket] = useState(false);
+  const [hasInboxCache, setHasInboxCache] = useState(initialHasInboxCache);
   const [isInvalidatingCache, setIsInvalidatingCache] = useState(false);
   const [isReorderingBuckets, setIsReorderingBuckets] = useState(false);
   const [savingBucketId, setSavingBucketId] = useState<string | null>(null);
@@ -270,6 +273,7 @@ export function BucketSettings({
         throw new Error(payload?.error ?? "Unable to invalidate inbox cache.");
       }
 
+      setHasInboxCache(false);
       toast.success("Inbox classification cache cleared.");
     } catch (error) {
       toast.error(
@@ -485,37 +489,60 @@ export function BucketSettings({
                 </p>
               </div>
 
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
+              {hasInboxCache ? (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <button
+                      className="inline-flex items-center justify-center rounded-full border border-rose-200 bg-rose-50 px-5 py-2.5 text-sm font-medium text-rose-700 transition hover:border-rose-300 hover:bg-rose-100"
+                      type="button"
+                    >
+                      Invalidate cache
+                    </button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Invalidate inbox cache?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This deletes the full cached inbox classification state for
+                        your account. The next inbox load will recompute all
+                        bucketing work.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel disabled={isInvalidatingCache}>
+                        Cancel
+                      </AlertDialogCancel>
+                      <AlertDialogAction
+                        disabled={isInvalidatingCache}
+                        onClick={() => void handleInvalidateCache()}
+                      >
+                        {isInvalidatingCache ? "Invalidating..." : "Invalidate cache"}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              ) : (
+                <div
+                  aria-describedby="empty-cache-tooltip"
+                  className="group relative inline-flex"
+                  tabIndex={0}
+                >
                   <button
-                    className="inline-flex items-center justify-center rounded-full border border-rose-200 bg-rose-50 px-5 py-2.5 text-sm font-medium text-rose-700 transition hover:border-rose-300 hover:bg-rose-100"
+                    className="inline-flex items-center justify-center rounded-full border border-rose-100 bg-rose-50/60 px-5 py-2.5 text-sm font-medium text-rose-300"
+                    disabled
                     type="button"
                   >
                     Invalidate cache
                   </button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Invalidate inbox cache?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      This deletes the full cached inbox classification state for
-                      your account. The next inbox load will recompute all
-                      bucketing work.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel disabled={isInvalidatingCache}>
-                      Cancel
-                    </AlertDialogCancel>
-                    <AlertDialogAction
-                      disabled={isInvalidatingCache}
-                      onClick={() => void handleInvalidateCache()}
-                    >
-                      {isInvalidatingCache ? "Invalidating..." : "Invalidate cache"}
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
+                  <div
+                    className="pointer-events-none absolute bottom-[calc(100%+0.75rem)] left-1/2 z-10 hidden w-max max-w-52 -translate-x-1/2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 shadow-[0_20px_50px_rgba(15,23,42,0.14)] group-hover:block group-focus-within:block"
+                    id="empty-cache-tooltip"
+                    role="tooltip"
+                  >
+                    The cache is empty.
+                  </div>
+                </div>
+              )}
             </div>
           </section>
         ) : null}
