@@ -1,6 +1,12 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import Link from "next/link";
+import {
+  FormEvent,
+  useEffect,
+  useEffectEvent,
+  useState,
+} from "react";
 
 import { AuthButton } from "@/app/components/auth-button";
 
@@ -27,6 +33,11 @@ type ApprovalModeOption = {
   description: string;
   label: string;
   mode: "BULK_EMAIL_ONLY" | "DANGEROUS" | "SAFE";
+};
+
+type Toast = {
+  id: string;
+  message: string;
 };
 
 type OpenAIChatProps = {
@@ -88,18 +99,30 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
   ]);
   const [drafts, setDrafts] = useState<ActionDraft[]>([]);
   const [approvalMode, setApprovalMode] = useState<ApprovalModeOption | null>(null);
-  const [approvalModeOptions, setApprovalModeOptions] = useState<ApprovalModeOption[]>([]);
   const [input, setInput] = useState("");
   const [isLoadingDrafts, setIsLoadingDrafts] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isUpdatingApprovalMode, setIsUpdatingApprovalMode] = useState(false);
   const [pendingDraftId, setPendingDraftId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
 
-  useEffect(() => {
-    void loadDrafts();
-    void loadApprovalMode();
-  }, []);
+  function showToast(message: string) {
+    const toastId = crypto.randomUUID();
+
+    setToasts((currentToasts) => [
+      ...currentToasts,
+      {
+        id: toastId,
+        message,
+      },
+    ]);
+
+    window.setTimeout(() => {
+      setToasts((currentToasts) =>
+        currentToasts.filter((toast) => toast.id !== toastId),
+      );
+    }, 4000);
+  }
 
   function updateAssistantMessage(messageId: string, content: string) {
     setMessages((currentMessages) =>
@@ -129,11 +152,13 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
 
       setDrafts(payload.drafts ?? []);
     } catch (loadError) {
-      setError(
+      const message =
         loadError instanceof Error
           ? loadError.message
-          : "Unable to load approvals.",
-      );
+          : "Unable to load approvals.";
+
+      setError(message);
+      showToast(message);
     } finally {
       setIsLoadingDrafts(false);
     }
@@ -155,19 +180,28 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
 
       const payload = (await response.json()) as {
         approvalMode?: ApprovalModeOption;
-        options?: ApprovalModeOption[];
       };
 
       setApprovalMode(payload.approvalMode ?? null);
-      setApprovalModeOptions(payload.options ?? []);
     } catch (loadError) {
-      setError(
+      const message =
         loadError instanceof Error
           ? loadError.message
-          : "Unable to load approval mode.",
-      );
+          : "Unable to load approval mode.";
+
+      setError(message);
+      showToast(message);
     }
   }
+
+  const loadInitialData = useEffectEvent(() => {
+    void loadDrafts();
+    void loadApprovalMode();
+  });
+
+  useEffect(() => {
+    loadInitialData();
+  }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -227,11 +261,13 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
         currentMessages.filter((message) => message.id !== nextAssistantMessageId),
       );
 
-      setError(
+      const message =
         submissionError instanceof Error
           ? submissionError.message
-          : "Chat request failed.",
-      );
+          : "Chat request failed.";
+
+      setError(message);
+      showToast(message);
     } finally {
       setIsSubmitting(false);
     }
@@ -258,55 +294,15 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
 
       await loadDrafts();
     } catch (draftError) {
-      setError(
+      const message =
         draftError instanceof Error
           ? draftError.message
-          : `Unable to ${action} this draft.`,
-      );
+          : `Unable to ${action} this draft.`;
+
+      setError(message);
+      showToast(message);
     } finally {
       setPendingDraftId(null);
-    }
-  }
-
-  async function handleApprovalModeChange(mode: ApprovalModeOption["mode"]) {
-    setIsUpdatingApprovalMode(true);
-    setError(null);
-
-    try {
-      const response = await fetch("/api/approval-mode", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ mode }),
-      });
-
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as
-          | {
-              error?: string;
-            }
-          | null;
-
-        throw new Error(payload?.error ?? "Unable to update approval mode.");
-      }
-
-      const payload = (await response.json()) as {
-        approvalMode?: ApprovalModeOption;
-        options?: ApprovalModeOption[];
-      };
-
-      setApprovalMode(payload.approvalMode ?? null);
-      setApprovalModeOptions(payload.options ?? []);
-      await loadDrafts();
-    } catch (modeError) {
-      setError(
-        modeError instanceof Error
-          ? modeError.message
-          : "Unable to update approval mode.",
-      );
-    } finally {
-      setIsUpdatingApprovalMode(false);
     }
   }
 
@@ -330,50 +326,28 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
             <div className="rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-medium uppercase tracking-[0.2em] text-emerald-700">
               {approvalMode?.label ?? "Loading mode"}
             </div>
+            <Link
+              aria-label="Open settings"
+              className="flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+              href="/settings"
+            >
+              <svg
+                aria-hidden="true"
+                className="block h-5 w-5"
+                fill="none"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.75"
+                viewBox="0 0 24 24"
+              >
+                <path d="M10.5 4.5c.5-1 1.9-1 2.4 0l.8 1.6c.2.4.6.7 1.1.8l1.7.3c1.1.2 1.5 1.6.8 2.4l-1.2 1.2c-.3.3-.4.8-.3 1.2l.3 1.7c.2 1.1-.9 2-1.9 1.5l-1.6-.8c-.4-.2-.9-.2-1.3 0l-1.6.8c-1 .5-2.1-.4-1.9-1.5l.3-1.7c.1-.4 0-.9-.3-1.2L6.7 9.6c-.7-.8-.3-2.2.8-2.4l1.7-.3c.4-.1.8-.4 1.1-.8l.8-1.6Z" />
+                <path d="M12 9.25a2.75 2.75 0 1 0 0 5.5a2.75 2.75 0 0 0 0-5.5Z" />
+              </svg>
+            </Link>
             <AuthButton className="px-4 py-2.5 text-sm" isAuthenticated />
           </div>
         </div>
-
-        <section className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div className="max-w-2xl">
-              <p className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">
-                Permission policy
-              </p>
-              <p className="mt-2 text-sm leading-6 text-slate-600">
-                Choose when Gmail and Calendar changes should stop for review.
-              </p>
-            </div>
-            <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[38rem]">
-              {approvalModeOptions.map((option) => {
-                const isSelected = approvalMode?.mode === option.mode;
-
-                return (
-                  <button
-                    key={option.mode}
-                    className={`rounded-[1.25rem] border px-4 py-3 text-left transition ${
-                      isSelected
-                        ? "border-slate-950 bg-slate-950 text-white"
-                        : "border-slate-200 bg-white text-slate-800 hover:border-slate-300"
-                    }`}
-                    disabled={isUpdatingApprovalMode}
-                    onClick={() => void handleApprovalModeChange(option.mode)}
-                    type="button"
-                  >
-                    <p className="text-sm font-semibold">{option.label}</p>
-                    <p
-                      className={`mt-1 text-xs leading-5 ${
-                        isSelected ? "text-slate-300" : "text-slate-500"
-                      }`}
-                    >
-                      {option.description}
-                    </p>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </section>
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_24rem]">
           <div className="flex min-h-[24rem] flex-col overflow-hidden rounded-[1.5rem] border border-slate-200 bg-slate-50 xl:h-[32rem] xl:min-h-0">
@@ -532,6 +506,16 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
             </section>
           </aside>
         </div>
+      </div>
+      <div className="pointer-events-none fixed right-6 top-6 z-50 flex w-full max-w-sm flex-col gap-3">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className="rounded-[1.25rem] border border-rose-200 bg-white/95 px-4 py-3 text-sm text-slate-800 shadow-[0_20px_50px_rgba(15,23,42,0.16)] backdrop-blur"
+          >
+            {toast.message}
+          </div>
+        ))}
       </div>
     </section>
   );
