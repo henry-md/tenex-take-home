@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useEffectEvent,
   useRef,
   useState,
 } from "react";
@@ -9,8 +10,6 @@ import {
   ChevronRight,
   Inbox,
   LoaderCircle,
-  MailPlus,
-  RefreshCw,
   Sparkles,
   X,
 } from "lucide-react";
@@ -67,6 +66,15 @@ const BUCKET_TONES: Record<string, BucketTone> = {
 
 const INBOX_LOAD_TOAST_DURATION_MS = 120_000;
 const INBOX_STATUS_POLL_INTERVAL_MS = 60_000;
+const INBOX_CACHE_STORAGE_KEY = "inbox-dashboard-cache";
+const INBOX_PENDING_SORT_REASON_STORAGE_KEY = "inbox-dashboard-pending-sort-reason";
+const PENDING_SORT_REASON_MAX_AGE_MS = 10 * 60 * 1000;
+
+type PersistedPendingSortReason = {
+  bucketName: string;
+  createdAt: number;
+  reason: "new-bucket";
+};
 
 function formatThreadTimestamp(value: string | null) {
   if (!value) {
@@ -102,7 +110,7 @@ function ThreadRow({ thread }: { thread: InboxThreadItem }) {
           <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500">
             <ChevronRight
               aria-hidden="true"
-              className="h-2.5 w-2.5 transition-transform duration-200 group-open:rotate-90"
+              className="details-chevron h-2.5 w-2.5"
               strokeWidth={2.25}
             />
           </span>
@@ -153,6 +161,96 @@ type InboxRefreshStatusResponse = {
   hasUpdates: boolean;
   unsortedThreadCount: number;
 };
+
+type BackgroundSyncState = "idle" | "checking" | "refreshing";
+type ActiveSyncIndicator =
+  | {
+      bucketName: string;
+      kind: "new-bucket";
+    }
+  | {
+      emailCount: number;
+      kind: "new-email";
+    };
+
+function readCachedInboxFromStorage() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const rawValue = window.localStorage.getItem(INBOX_CACHE_STORAGE_KEY);
+
+  if (!rawValue) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(rawValue) as InboxHomepageData;
+  } catch {
+    window.localStorage.removeItem(INBOX_CACHE_STORAGE_KEY);
+    return null;
+  }
+}
+
+function writeCachedInboxToStorage(inbox: InboxHomepageData) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(INBOX_CACHE_STORAGE_KEY, JSON.stringify(inbox));
+}
+
+function readPendingSortReason() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const rawValue = window.localStorage.getItem(INBOX_PENDING_SORT_REASON_STORAGE_KEY);
+
+  if (!rawValue) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue) as PersistedPendingSortReason;
+
+    if (
+      !parsed ||
+      parsed.reason !== "new-bucket" ||
+      typeof parsed.createdAt !== "number" ||
+      typeof parsed.bucketName !== "string" ||
+      Date.now() - parsed.createdAt > PENDING_SORT_REASON_MAX_AGE_MS
+    ) {
+      window.localStorage.removeItem(INBOX_PENDING_SORT_REASON_STORAGE_KEY);
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    window.localStorage.removeItem(INBOX_PENDING_SORT_REASON_STORAGE_KEY);
+    return null;
+  }
+}
+
+function clearPendingSortReason() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.removeItem(INBOX_PENDING_SORT_REASON_STORAGE_KEY);
+}
+
+function truncateBucketName(name: string, maxLength: number) {
+  return name.slice(0, maxLength).trimEnd();
+}
+
+function getActiveSyncLabel(indicator: ActiveSyncIndicator) {
+  if (indicator.kind === "new-email") {
+    return `Syncing ${indicator.emailCount} new email${indicator.emailCount === 1 ? "" : "s"}`;
+  }
+
+  return `Filling new bucket: ${truncateBucketName(indicator.bucketName, 15)}`;
+}
 
 function formatDuration(durationMs: number) {
   if (durationMs < 1000) {
@@ -233,43 +331,54 @@ export function InboxDashboard({
   initialInboxThreadLimit,
 }: InboxDashboardProps) {
   const initialLoadStartedRef = useRef(false);
+  const initialBackgroundSyncStartedRef = useRef(false);
   const isMountedRef = useRef(true);
+  const hydratedFromStorageRef = useRef(false);
+  const loadedCachedSnapshotRef = useRef(false);
   const latestLoadRequestIdRef = useRef(0);
   const [inbox, setInbox] = useState<InboxHomepageData | null>(null);
+  const [backgroundSyncState, setBackgroundSyncState] =
+    useState<BackgroundSyncState>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isHeroVisible, setIsHeroVisible] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSorting, setIsSorting] = useState(true);
-  const [unsortedThreadCount, setUnsortedThreadCount] = useState(0);
+  const [activeSyncIndicator, setActiveSyncIndicator] =
+    useState<ActiveSyncIndicator | null>(null);
 
-  async function loadInbox(options?: {
+  const loadInbox = useEffectEvent(async (options?: {
     isInitialLoad?: boolean;
+    refresh?: boolean;
     showSuccessToast?: boolean;
+    showSortingOverlay?: boolean;
     silent?: boolean;
-  }) {
+  }) => {
     const requestId = latestLoadRequestIdRef.current + 1;
 
     latestLoadRequestIdRef.current = requestId;
 
     if (options?.isInitialLoad) {
-      setIsLoading(true);
+      setIsLoading(!hydratedFromStorageRef.current);
     }
 
     setErrorMessage(null);
-    setIsSorting(true);
+
+    if (options?.showSortingOverlay ?? true) {
+      setIsSorting(true);
+    }
 
     try {
       const payload = await fetchInboxHomepage({
-        refresh: !options?.isInitialLoad,
+        refresh: options?.refresh ?? !options?.isInitialLoad,
       });
 
       if (!isMountedRef.current || latestLoadRequestIdRef.current !== requestId) {
         return;
       }
 
+      loadedCachedSnapshotRef.current = payload.gmailFetch.durationMs === 0;
       setInbox(payload.inbox);
-      setUnsortedThreadCount(0);
+      writeCachedInboxToStorage(payload.inbox);
 
       if (options?.showSuccessToast) {
         showInboxLoadToasts(payload);
@@ -293,27 +402,85 @@ export function InboxDashboard({
       }
 
       setIsLoading(false);
-      setIsRefreshing(false);
-      setIsSorting(false);
+      setActiveSyncIndicator(null);
+      clearPendingSortReason();
+
+      if (options?.showSortingOverlay ?? true) {
+        setIsSorting(false);
+      }
     }
-  }
+  });
 
   async function checkForUpdates() {
     const payload = await fetchInboxRefreshStatus();
 
-    if (!isMountedRef.current) {
-      return payload;
-    }
-
-    setUnsortedThreadCount(payload.unsortedThreadCount);
-
     return payload;
   }
+
+  const syncLatestEmailsIfNeeded = useEffectEvent(async () => {
+    if (
+      backgroundSyncState !== "idle" ||
+      isLoading ||
+      isSorting
+    ) {
+      return;
+    }
+
+    setBackgroundSyncState("checking");
+
+    try {
+      const status = await checkForUpdates();
+
+      if (!isMountedRef.current || !status.hasUpdates) {
+        return;
+      }
+
+      setBackgroundSyncState("refreshing");
+      setActiveSyncIndicator({
+        emailCount: status.unsortedThreadCount,
+        kind: "new-email",
+      });
+      await loadInbox({
+        refresh: true,
+        showSuccessToast: true,
+        showSortingOverlay: false,
+        silent: true,
+      });
+    } catch (error) {
+      if (!isMountedRef.current) {
+        return;
+      }
+
+      console.error("Background inbox sync failed", error);
+    } finally {
+      if (!isMountedRef.current) {
+        return;
+      }
+
+      setBackgroundSyncState("idle");
+    }
+  });
 
   useEffect(() => {
     isMountedRef.current = true;
 
+    const cachedInbox = readCachedInboxFromStorage();
     const storedValue = window.localStorage.getItem("inbox-dashboard-hero-hidden");
+    const pendingSortReason = readPendingSortReason();
+
+    if (cachedInbox) {
+      hydratedFromStorageRef.current = true;
+      setInbox(cachedInbox);
+      setIsLoading(false);
+      setIsSorting(false);
+    }
+
+    if (pendingSortReason && cachedInbox) {
+      setActiveSyncIndicator({
+        bucketName: pendingSortReason.bucketName,
+        kind: "new-bucket",
+      });
+    }
 
     if (storedValue === "true") {
       setIsHeroVisible(false);
@@ -336,31 +503,31 @@ export function InboxDashboard({
     void loadInbox({
       isInitialLoad: true,
       showSuccessToast: true,
+      showSortingOverlay: !hydratedFromStorageRef.current,
       silent: true,
     });
   }, []);
+
+  useEffect(() => {
+    if (!inbox || initialBackgroundSyncStartedRef.current || !loadedCachedSnapshotRef.current) {
+      return;
+    }
+
+    initialBackgroundSyncStartedRef.current = true;
+    void syncLatestEmailsIfNeeded();
+  }, [inbox]);
 
   useEffect(() => {
     if (!inbox) {
       return;
     }
 
-    let isActive = true;
-
     async function pollForUpdates() {
       if (document.visibilityState === "hidden") {
         return;
       }
 
-      try {
-        await checkForUpdates();
-      } catch (error) {
-        if (!isActive) {
-          return;
-        }
-
-        console.error("Checking inbox refresh status failed", error);
-      }
+      await syncLatestEmailsIfNeeded();
     }
 
     const intervalId = window.setInterval(() => {
@@ -377,33 +544,10 @@ export function InboxDashboard({
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
-      isActive = false;
       window.clearInterval(intervalId);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [inbox]);
-
-  async function handleRefresh() {
-    if (isRefreshing || isLoading || isSorting) {
-      return;
-    }
-
-    setIsRefreshing(true);
-
-    try {
-      const status = await checkForUpdates();
-
-      if (!status.hasUpdates && inbox) {
-        setIsRefreshing(false);
-        toast.success("Inbox is already up to date.");
-        return;
-      }
-
-      await loadInbox({ showSuccessToast: true });
-    } catch {
-      await loadInbox({ showSuccessToast: true });
-    }
-  }
 
   function handleDismissHero() {
     setIsHeroVisible(false);
@@ -414,11 +558,32 @@ export function InboxDashboard({
     inbox?.buckets.find((bucket) => bucket.name === "Important")?.count ?? 0;
   const configuredThreadLimit =
     inbox?.configuredThreadLimit ?? initialInboxThreadLimit;
-  const unsortedThreadLabel =
-    unsortedThreadCount === 1 ? "1 email" : `${unsortedThreadCount} emails`;
+  const activeSyncLabel = activeSyncIndicator
+    ? getActiveSyncLabel(activeSyncIndicator)
+    : null;
 
   return (
     <section className="space-y-6">
+      {activeSyncLabel ? (
+        <div className="sticky top-4 z-20 flex justify-end">
+          <div className="w-full max-w-sm rounded-[1.2rem] border border-sky-200 bg-[linear-gradient(180deg,rgba(240,249,255,0.98),rgba(224,242,254,0.92))] px-4 py-3 shadow-[0_20px_50px_rgba(14,116,144,0.14)] backdrop-blur">
+            <div className="flex items-center gap-2 text-sm font-semibold text-sky-950">
+              <LoaderCircle
+                aria-hidden="true"
+                className="h-4 w-4 animate-spin"
+                strokeWidth={2}
+              />
+              <span className="min-w-0 truncate">{activeSyncLabel}</span>
+            </div>
+            {activeSyncIndicator.kind === "new-email" ? (
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-sky-100">
+                <div className="h-full w-2/5 animate-pulse rounded-full bg-sky-500" />
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
       {isHeroVisible ? (
         <header className="overflow-hidden rounded-[2rem] border border-white/70 bg-[linear-gradient(135deg,rgba(255,250,240,0.96),rgba(255,255,255,0.92)_45%,rgba(240,249,255,0.9))] p-6 shadow-[0_30px_90px_rgba(15,23,42,0.08)] backdrop-blur md:p-8">
           <div className="flex items-start justify-between gap-4">
@@ -485,68 +650,9 @@ export function InboxDashboard({
         </header>
       ) : null}
 
-      <section className="flex flex-col gap-4 rounded-[1.75rem] border border-white/70 bg-white/85 p-5 shadow-[0_30px_80px_rgba(15,23,42,0.08)] backdrop-blur lg:flex-row lg:items-center lg:justify-between">
-        <div className="space-y-1">
-          <p className="text-sm font-semibold text-slate-950">Inbox view</p>
-          <p className="text-sm text-slate-500">
-            Buckets and classifier prompts now live in Settings. Refresh to rerun
-            categorization on the latest inbox snapshot.
-          </p>
-        </div>
-
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          <button
-            className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
-            disabled={isRefreshing || isLoading || isSorting}
-            onClick={() => void handleRefresh()}
-            type="button"
-          >
-            <RefreshCw
-              aria-hidden="true"
-              className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`}
-              strokeWidth={2}
-            />
-            Refresh
-          </button>
-        </div>
-      </section>
-
       {errorMessage && !inbox ? (
         <section className="rounded-[1.75rem] border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700">
           {errorMessage}
-        </section>
-      ) : null}
-
-      {unsortedThreadCount > 0 ? (
-        <section className="flex flex-col gap-4 rounded-[1.75rem] border border-amber-200 bg-amber-50/90 p-5 shadow-[0_24px_60px_rgba(15,23,42,0.05)] sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-start gap-3">
-            <span className="mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700">
-              <MailPlus aria-hidden="true" className="h-5 w-5" strokeWidth={2} />
-            </span>
-            <div className="space-y-1">
-              <p className="text-sm font-semibold text-amber-950">
-                {unsortedThreadLabel} not currently sorted
-              </p>
-              <p className="text-sm text-amber-800">
-                New inbox activity arrived after the last sort. Refresh when you are
-                ready to re-fetch and run classification again.
-              </p>
-            </div>
-          </div>
-
-          <button
-            className="inline-flex items-center justify-center gap-2 rounded-full border border-amber-300 bg-white px-4 py-2.5 text-sm font-medium text-amber-900 transition hover:border-amber-400 hover:bg-amber-100/40 disabled:cursor-not-allowed disabled:text-amber-500"
-            disabled={isRefreshing || isLoading || isSorting}
-            onClick={() => void handleRefresh()}
-            type="button"
-          >
-            <RefreshCw
-              aria-hidden="true"
-              className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`}
-              strokeWidth={2}
-            />
-            Re-fetch and sort
-          </button>
         </section>
       ) : null}
 
@@ -572,27 +678,23 @@ export function InboxDashboard({
       ) : null}
 
       {inbox ? (
-        <div className="relative space-y-4">
+        <div className="space-y-4">
           {isSorting ? (
-            <div className="pointer-events-none absolute inset-0 z-10 rounded-[2rem] bg-white/72 backdrop-blur-[2px]">
-              <div className="flex h-full items-center justify-center p-6">
-                <div className="rounded-[1.5rem] border border-slate-200 bg-white/95 px-6 py-5 text-center shadow-[0_24px_60px_rgba(15,23,42,0.12)]">
-                  <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-slate-950 text-white">
-                    <LoaderCircle
-                      aria-hidden="true"
-                      className="h-5 w-5 animate-spin"
-                      strokeWidth={2}
-                    />
-                  </div>
-                  <p className="mt-4 text-base font-semibold text-slate-950">
-                    Sorting your inbox
-                  </p>
-                  <p className="mt-1 text-sm text-slate-500">
-                    Re-running bucket classification now.
+            <section className="rounded-[1.5rem] border border-sky-200 bg-[linear-gradient(180deg,rgba(240,249,255,0.98),rgba(224,242,254,0.92))] px-5 py-4 text-sm text-sky-900 shadow-[0_18px_45px_rgba(14,116,144,0.08)]">
+              <div className="flex items-center gap-3">
+                <LoaderCircle
+                  aria-hidden="true"
+                  className="h-4 w-4 animate-spin"
+                  strokeWidth={2}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold">Sorting your inbox</p>
+                  <p className="text-sky-800/80">
+                    Fetching recent emails and grouping them into your configured buckets now.
                   </p>
                 </div>
               </div>
-            </div>
+            </section>
           ) : null}
           {inbox.buckets.map((bucket) => {
             const tone = getBucketTone(bucket.name);
@@ -611,7 +713,7 @@ export function InboxDashboard({
                       <span className="mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500">
                         <ChevronRight
                           aria-hidden="true"
-                          className="h-3 w-3 transition-transform duration-200 group-open:rotate-90"
+                          className="details-chevron h-3 w-3"
                           strokeWidth={2.25}
                         />
                       </span>

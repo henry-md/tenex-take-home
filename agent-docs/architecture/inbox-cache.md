@@ -52,6 +52,8 @@ This is why a bucket edit no longer forces a full inbox re-sort.
 ## UI contract
 
 - Initial dashboard load prefers cached inbox state.
+- If the dashboard rendered from cached inbox state, the client immediately starts a background Gmail check and shows a non-blocking status pill while it is checking or fetching newer inbox threads.
 - Manual refresh first checks `/api/inbox-status`.
 - If there are no new or reordered inbox threads, the dashboard keeps the cached board.
 - If there are updates, the dashboard calls `/api/inbox?refresh=1` to sync Gmail and incrementally recompute memberships.
+- The existing inbox-status polling loop still runs after load, so the UI can continue to alert the user when newer inbox activity arrives after the cached board was rendered.

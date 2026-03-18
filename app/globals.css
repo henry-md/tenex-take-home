@@ -24,3 +24,11 @@ body {
   color: var(--foreground);
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
 }
+
+.details-chevron {
+  transition: transform 200ms;
+}
+
+details[open] .details-chevron {
+  transform: rotate(90deg);
+}

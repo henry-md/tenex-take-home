@@ -379,19 +379,19 @@ function toEmailThreadSummary(snapshot: CachedThreadSnapshot): EmailThreadSummar
   };
 }
 
-function countThreadIdDifferences(currentThreadIds: string[], cachedThreadIds: string[]) {
+function countNewThreadIds(currentThreadIds: string[], cachedThreadIds: string[]) {
   const cachedThreadIdSet = new Set(cachedThreadIds);
-  let differenceCount = 0;
+  let newThreadCount = 0;
 
   for (let index = 0; index < currentThreadIds.length; index += 1) {
     const threadId = currentThreadIds[index];
 
-    if (!cachedThreadIdSet.has(threadId) || cachedThreadIds[index] !== threadId) {
-      differenceCount += 1;
+    if (!cachedThreadIdSet.has(threadId)) {
+      newThreadCount += 1;
     }
   }
 
-  return differenceCount;
+  return newThreadCount;
 }
 
 function getBucketSortKey(name: string) {
@@ -1649,10 +1649,10 @@ export async function getInboxRefreshStatus(input: {
   const latestThreadIds = await listRecentInboxThreadIds(input.accessToken, {
     maxResults: inboxThreadLimit,
   });
-  const unsortedThreadCount =
-    parsedPayload.configuredThreadLimit !== inboxThreadLimit
-      ? latestThreadIds.length
-      : countThreadIdDifferences(latestThreadIds, parsedPayload.threadIds);
+  const unsortedThreadCount = countNewThreadIds(
+    latestThreadIds,
+    parsedPayload.threadIds,
+  );
 
   return {
     checkedAt: new Date().toISOString(),

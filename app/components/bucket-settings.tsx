@@ -29,6 +29,8 @@ type BucketSettingsProps = {
   showDebugCacheControls: boolean;
 };
 
+const INBOX_PENDING_SORT_REASON_STORAGE_KEY = "inbox-dashboard-pending-sort-reason";
+
 function resizeTextarea(element: HTMLTextAreaElement) {
   element.style.height = "0px";
   element.style.height = `${element.scrollHeight}px`;
@@ -90,6 +92,13 @@ function isDragExemptTarget(target: EventTarget | null) {
   return (
     target instanceof HTMLElement &&
     Boolean(target.closest('textarea, [data-drag-exempt="true"]'))
+  );
+}
+
+function isDragHandleTarget(target: EventTarget | null) {
+  return (
+    target instanceof HTMLElement &&
+    Boolean(target.closest('[data-drag-handle="true"]'))
   );
 }
 
@@ -197,6 +206,17 @@ export function BucketSettings({
         buckets: BucketSetting[];
       };
 
+      if (hasInboxCache) {
+        window.localStorage.setItem(
+          INBOX_PENDING_SORT_REASON_STORAGE_KEY,
+          JSON.stringify({
+            bucketName: trimmedName,
+            createdAt: Date.now(),
+            reason: "new-bucket",
+          }),
+        );
+      }
+
       syncBuckets(payload.buckets);
       setNewBucketName("");
       setNewBucketPrompt("");
@@ -299,7 +319,11 @@ export function BucketSettings({
     event: DragEvent<HTMLElement>,
     bucketId: string,
   ) {
-    if (isReorderingBuckets || isDragExemptTarget(event.target)) {
+    if (
+      isReorderingBuckets ||
+      isDragExemptTarget(event.target) ||
+      !isDragHandleTarget(event.target)
+    ) {
       event.preventDefault();
       return;
     }
@@ -419,7 +443,7 @@ export function BucketSettings({
                   isDropTarget
                     ? "border-slate-400 shadow-[0_20px_45px_rgba(15,23,42,0.12)]"
                     : "border-slate-200"
-                } ${isDragging ? "cursor-grabbing opacity-55" : "cursor-grab"} select-none`}
+                } ${isDragging ? "opacity-55" : ""} select-none`}
                 draggable={!isReorderingBuckets}
                 onDragEnd={handleDragEnd}
                 onDragOver={(event) => handleDragOver(event, bucket.id)}
@@ -431,7 +455,10 @@ export function BucketSettings({
                     <div className="flex flex-wrap items-center gap-2">
                       <span
                         aria-hidden="true"
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-slate-500 transition"
+                        className={`inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-slate-500 transition ${
+                          isDragging ? "cursor-grabbing" : "cursor-grab"
+                        }`}
+                        data-drag-handle="true"
                       >
                         <GripVertical aria-hidden="true" className="h-4 w-4" />
                       </span>
@@ -460,12 +487,24 @@ export function BucketSettings({
 
                 <AutoResizeTextarea
                   className="mt-4 min-h-[4.5rem] w-full resize-none overflow-hidden rounded-[1rem] border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-900 outline-none transition focus:border-slate-400 select-text"
+                  data-drag-exempt="true"
+                  draggable={false}
                   onChange={(event) =>
                     setDraftPrompts((current) => ({
                       ...current,
                       [bucket.id]: event.target.value,
                     }))
                   }
+                  onDragStart={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                  onMouseDown={(event) => {
+                    event.stopPropagation();
+                  }}
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                  }}
                   rows={2}
                   value={draftPrompt}
                 />

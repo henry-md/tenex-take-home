@@ -230,7 +230,7 @@ function EmailResultCard({ email }: { email: EmailResult }) {
             <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500">
               <ChevronRight
                 aria-hidden="true"
-                className="h-2.5 w-2.5 transition-transform duration-200 group-open:rotate-90"
+                className="details-chevron h-2.5 w-2.5"
                 strokeWidth={2.25}
               />
             </span>
@@ -788,7 +788,7 @@ export function OpenAIChat({
                       <span className="flex h-4 w-4 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-slate-500 transition duration-200 group-open:border-slate-300 group-open:bg-white group-open:text-slate-700">
                         <ChevronRight
                           aria-hidden="true"
-                          className="h-2.5 w-2.5 transition-transform duration-200 group-open:rotate-90"
+                          className="details-chevron h-2.5 w-2.5"
                           strokeWidth={2.25}
                         />
                       </span>
