@@ -48,12 +48,13 @@ export async function GET(request: Request) {
     return NextResponse.json(
       {
         gmailFetch: {
+          cacheHit: result.emailCacheHit,
           durationMs: result.timings.gmailFetchMs,
           fetchedThreadCount: result.inbox.totalThreads,
         },
         inbox: result.inbox,
         sorting: {
-          cacheHit: result.cacheHit,
+          cacheHit: result.sortingCacheHit,
           durationMs: result.timings.sortingMs,
           sortedEmailCount: result.inbox.totalThreads,
         },

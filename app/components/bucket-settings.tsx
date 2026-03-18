@@ -24,6 +24,7 @@ import { flushSync } from "react-dom";
 import { toast } from "sonner";
 
 import {
+  clearPendingInboxRefresh,
   clearCachedInbox,
   INBOX_PENDING_SORT_REASON_STORAGE_KEY,
   readCachedInboxesFromStorage,
@@ -160,6 +161,7 @@ export function BucketSettings({
 
   function clearLocalDashboardState() {
     clearCachedInbox();
+    clearPendingInboxRefresh();
     window.localStorage.removeItem(INBOX_PENDING_SORT_REASON_STORAGE_KEY);
   }
 

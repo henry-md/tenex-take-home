@@ -59,6 +59,7 @@ This is also why shrinking the inbox thread limit can now be a cache hit with no
 
 - Initial dashboard load prefers cached inbox state.
 - If the dashboard rendered from cached inbox state, the client immediately starts a background Gmail check and shows a non-blocking status pill while it is checking or fetching newer inbox threads.
+- The inbox load response exposes Gmail/thread cache hits separately from sorting cache hits so the UI can report each reuse path explicitly.
 - Manual refresh first checks `/api/inbox-status`.
 - If there are no new or reordered inbox threads, the dashboard keeps the cached board.
 - If there are updates, the dashboard calls `/api/inbox?refresh=1` to sync Gmail and incrementally recompute memberships.

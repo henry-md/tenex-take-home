@@ -23,6 +23,7 @@ import {
   readPendingInboxRefresh,
   writeCachedInboxToStorage,
 } from "@/app/components/inbox-dashboard-storage";
+import { getInboxLoadToastMessages } from "@/lib/inbox/load-feedback";
 import type {
   InboxHomepageData,
   InboxThreadItem,
@@ -151,6 +152,7 @@ function ThreadRow({ thread }: { thread: InboxThreadItem }) {
 
 type InboxHomepageResponse = {
   gmailFetch: {
+    cacheHit: boolean;
     durationMs: number;
     fetchedThreadCount: number;
   };
@@ -231,33 +233,12 @@ function getActiveSyncLabel(indicator: ActiveSyncIndicator) {
   return `Filling new bucket: ${truncateBucketName(indicator.bucketName, 15)}`;
 }
 
-function formatDuration(durationMs: number) {
-  if (durationMs < 1000) {
-    return `${durationMs}ms`;
-  }
-
-  return `${(durationMs / 1000).toFixed(durationMs >= 10_000 ? 0 : 1)}s`;
-}
-
 function showInboxLoadToasts(payload: InboxHomepageResponse) {
-  if (payload.gmailFetch.durationMs === 0) {
-    toast.success(
-      payload.sorting.cacheHit
-        ? "Loaded cached inbox snapshot (cache hit)."
-        : "Loaded cached inbox snapshot and refreshed bucket memberships.",
-      { duration: INBOX_LOAD_TOAST_DURATION_MS },
-    );
-    return;
+  for (const message of getInboxLoadToastMessages(payload)) {
+    toast.success(message, {
+      duration: INBOX_LOAD_TOAST_DURATION_MS,
+    });
   }
-
-  toast.success(
-    `Fetched ${payload.gmailFetch.fetchedThreadCount} Gmail thread${payload.gmailFetch.fetchedThreadCount === 1 ? "" : "s"} in ${formatDuration(payload.gmailFetch.durationMs)}.`,
-    { duration: INBOX_LOAD_TOAST_DURATION_MS },
-  );
-  toast.success(
-    `Inbox sorting finished in ${formatDuration(payload.sorting.durationMs)}${payload.sorting.cacheHit ? " (cache hit)." : "."}`,
-    { duration: INBOX_LOAD_TOAST_DURATION_MS },
-  );
 }
 
 async function fetchInboxHomepage(options?: { refresh?: boolean }) {
@@ -356,7 +337,7 @@ export function InboxDashboard({
         return;
       }
 
-      loadedCachedSnapshotRef.current = payload.gmailFetch.durationMs === 0;
+      loadedCachedSnapshotRef.current = payload.gmailFetch.cacheHit;
       setInbox(payload.inbox);
       writeCachedInboxToStorage(payload.inbox);
       clearPendingInboxRefresh();

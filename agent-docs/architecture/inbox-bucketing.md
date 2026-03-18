@@ -48,7 +48,7 @@ Make the authenticated homepage inbox-first by loading the latest configured Gma
 - A smaller inbox thread limit can reuse the freshest larger compatible cached snapshot, so changes like `200 -> 100` can stay on the cache-hit path.
 - Refresh loads first list inbox thread ids from Gmail, then fetch summaries only for the current top thread set.
 - Sorting time includes cache lookup, selective reclassification for changed threads or stale bucket memberships, and cache write.
-- `GET /api/inbox` returns both timings so the dashboard can show two success toasts: one for Gmail fetch and one for sorting.
+- `GET /api/inbox` returns both timings plus separate Gmail-cache-hit and sorting-cache-hit flags so the dashboard can show two success toasts: one for Gmail/thread reuse and one for sorting reuse.
 - A cache hit on the default dashboard load can avoid Gmail entirely.
 
 ## Related cache doc

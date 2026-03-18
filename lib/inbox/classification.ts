@@ -4,6 +4,10 @@ import OpenAI from "openai";
 
 import { BucketKind, type Prisma } from "@/generated/prisma/client";
 import {
+  type LoadedInboxStatePayload,
+  selectCompatibleInboxStatePayload,
+} from "@/lib/inbox/cache-helpers";
+import {
   getEmailThreads,
   listRecentInboxThreadIds,
   type EmailThreadSummary,
@@ -184,8 +188,9 @@ export type InboxLoadTimings = {
 };
 
 export type InboxLoadResult = {
-  cacheHit: boolean;
+  emailCacheHit: boolean;
   inbox: InboxHomepageData;
+  sortingCacheHit: boolean;
   timings: InboxLoadTimings;
 };
 
@@ -221,11 +226,6 @@ type InboxStatePayload = {
   threadIds: string[];
   threadsById: Record<string, CachedThreadSnapshot>;
   version: 2;
-};
-
-type LoadedInboxStatePayload = {
-  payload: InboxStatePayload;
-  requiresSave: boolean;
 };
 
 type BucketMembershipClassification = {
@@ -312,30 +312,6 @@ function getInboxStateCacheKeyHash(cacheKey: string) {
   return createHash("sha256").update(cacheKey).digest("hex");
 }
 
-function createLimitedInboxStatePayload(
-  payload: InboxStatePayload,
-  configuredThreadLimit: number,
-) {
-  const limitedPayload = createEmptyInboxStatePayload(configuredThreadLimit);
-  const limitedThreadIds = payload.threadIds.slice(0, configuredThreadLimit);
-
-  for (const threadId of limitedThreadIds) {
-    const snapshot = payload.threadsById[threadId];
-
-    if (!snapshot) {
-      continue;
-    }
-
-    limitedPayload.threadIds.push(threadId);
-    limitedPayload.threadsById[threadId] = snapshot;
-    limitedPayload.bucketMembershipsByThreadId[threadId] = {
-      ...(payload.bucketMembershipsByThreadId[threadId] ?? {}),
-    };
-  }
-
-  return limitedPayload;
-}
-
 async function loadInboxStatePayload(ownerId: string, configuredThreadLimit: number) {
   const rows = await prisma.inboxClassificationCache.findMany({
     where: {
@@ -365,36 +341,13 @@ async function loadInboxStatePayload(ownerId: string, configuredThreadLimit: num
           updatedAt: row.updatedAt,
         },
       ];
-    })
-    .sort((left, right) => {
-      const updatedAtDelta = right.updatedAt.getTime() - left.updatedAt.getTime();
-
-      if (updatedAtDelta !== 0) {
-        return updatedAtDelta;
-      }
-
-      return left.payload.configuredThreadLimit - right.payload.configuredThreadLimit;
     });
-  const compatibleRow = compatibleRows[0];
 
-  if (!compatibleRow) {
-    return null;
-  }
-
-  if (compatibleRow.payload.configuredThreadLimit === configuredThreadLimit) {
-    return {
-      payload: compatibleRow.payload,
-      requiresSave: compatibleRow.cacheKey !== getInboxStateCacheKey(configuredThreadLimit),
-    } satisfies LoadedInboxStatePayload;
-  }
-
-  return {
-    payload: createLimitedInboxStatePayload(
-      compatibleRow.payload,
-      configuredThreadLimit,
-    ),
-    requiresSave: true,
-  } satisfies LoadedInboxStatePayload;
+  return selectCompatibleInboxStatePayload({
+    configuredThreadLimit,
+    expectedCacheKey: getInboxStateCacheKey(configuredThreadLimit),
+    rows: compatibleRows,
+  }) as LoadedInboxStatePayload<CachedThreadSnapshot, CachedBucketMembership> | null;
 }
 
 async function saveInboxStatePayload(ownerId: string, payload: InboxStatePayload) {
@@ -1875,8 +1828,9 @@ export async function loadInboxHomepage(input: {
     }
 
     return {
-      cacheHit: !hadMembershipUpdates,
+      emailCacheHit: true,
       inbox: buildHomepageDataFromState(buckets, cachedPayload),
+      sortingCacheHit: !hadMembershipUpdates,
       timings: {
         gmailFetchMs: 0,
         sortingMs: Math.round(performance.now() - sortingStartedAt),
@@ -1896,8 +1850,9 @@ export async function loadInboxHomepage(input: {
   await saveInboxStatePayload(owner.id, synchronized.payload);
 
   return {
-    cacheHit: !synchronized.reclassified,
+    emailCacheHit: false,
     inbox: buildHomepageDataFromState(buckets, synchronized.payload),
+    sortingCacheHit: !synchronized.reclassified,
     timings: {
       gmailFetchMs,
       sortingMs: Math.round(performance.now() - sortingStartedAt),
