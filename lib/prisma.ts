@@ -26,7 +26,8 @@ function hasRequiredModels(client: PrismaClient | undefined) {
   return Boolean(
     client &&
       "integrationActionDraft" in client &&
-      "workspaceApprovalPreference" in client,
+      "workspaceApprovalPreference" in client &&
+      "openAIChatMessage" in client,
   );
 }
 

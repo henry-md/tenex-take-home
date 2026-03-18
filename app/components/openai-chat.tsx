@@ -1,6 +1,6 @@
 "use client";
 
-import { Settings2 } from "lucide-react";
+import { Settings2, Trash2 } from "lucide-react";
 import Link from "next/link";
 import {
   FormEvent,
@@ -10,6 +10,17 @@ import {
 } from "react";
 
 import { AuthButton } from "@/app/components/auth-button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/app/components/ui/alert-dialog";
 import { type ApprovalModeOption } from "@/lib/google-workspace/approval-mode-options";
 
 type ChatMessage = {
@@ -47,6 +58,14 @@ type OpenAIChatProps = {
   firstName?: string;
   initialApprovalMode: ApprovalModeOption;
 };
+
+function createIntroMessage(firstName?: string): ChatMessage {
+  return {
+    id: "assistant-intro",
+    role: "assistant",
+    content: `Welcome${firstName ? `, ${firstName}` : ""}. Ask me to search Gmail, check Calendar, or queue a change for manual approval.`,
+  };
+}
 
 function extractLabelName(summary: string) {
   const matchedLabel = summary.match(/"([^"]+)" label/);
@@ -129,18 +148,14 @@ export function OpenAIChat({
   firstName,
   initialApprovalMode,
 }: OpenAIChatProps) {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: "assistant-intro",
-      role: "assistant",
-      content: `Welcome${firstName ? `, ${firstName}` : ""}. Ask me to search Gmail, check Calendar, or queue a change for manual approval.`,
-    },
-  ]);
+  const introMessage = createIntroMessage(firstName);
+  const [messages, setMessages] = useState<ChatMessage[]>([introMessage]);
   const [drafts, setDrafts] = useState<ActionDraft[]>([]);
-  const [approvalMode] = useState(initialApprovalMode);
   const [input, setInput] = useState("");
   const [isLoadingDrafts, setIsLoadingDrafts] = useState(true);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDeletingChat, setIsDeletingChat] = useState(false);
   const [pendingDraftId, setPendingDraftId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -161,20 +176,6 @@ export function OpenAIChat({
         currentToasts.filter((toast) => toast.id !== toastId),
       );
     }, 4000);
-  }
-
-  function updateAssistantMessage(
-    messageId: string,
-    content: string,
-    toolCalls: ToolCallSummary[] = [],
-  ) {
-    setMessages((currentMessages) =>
-      currentMessages.map((message) =>
-        message.id === messageId
-          ? { ...message, content, toolCalls }
-          : message,
-      ),
-    );
   }
 
   async function loadDrafts() {
@@ -209,8 +210,42 @@ export function OpenAIChat({
     }
   }
 
+  async function loadChatMessages(options?: { suppressErrors?: boolean }) {
+    try {
+      const response = await fetch("/api/chat");
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as
+          | {
+              error?: string;
+            }
+          | null;
+
+        throw new Error(payload?.error ?? "Unable to load chat history.");
+      }
+
+      const payload = (await response.json()) as {
+        messages?: ChatMessage[];
+      };
+
+      setMessages([introMessage, ...(payload.messages ?? [])]);
+    } catch (loadError) {
+      const message =
+        loadError instanceof Error
+          ? loadError.message
+          : "Unable to load chat history.";
+
+      if (!options?.suppressErrors) {
+        setError(message);
+        showToast(message);
+      }
+    } finally {
+      setIsLoadingMessages(false);
+    }
+  }
+
   const loadInitialData = useEffectEvent(() => {
-    void loadDrafts();
+    void Promise.all([loadDrafts(), loadChatMessages()]);
   });
 
   useEffect(() => {
@@ -222,7 +257,7 @@ export function OpenAIChat({
 
     const trimmedInput = input.trim();
 
-    if (!trimmedInput || isSubmitting) {
+    if (!trimmedInput || isSubmitting || isLoadingMessages || isDeletingChat) {
       return;
     }
 
@@ -232,10 +267,10 @@ export function OpenAIChat({
       content: trimmedInput,
     };
     const nextAssistantMessageId = crypto.randomUUID();
-    const nextMessages = [...messages, nextUserMessage];
 
-    setMessages([
-      ...nextMessages,
+    setMessages((currentMessages) => [
+      ...currentMessages,
+      nextUserMessage,
       {
         id: nextAssistantMessageId,
         role: "assistant",
@@ -253,7 +288,7 @@ export function OpenAIChat({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          messages: nextMessages.map(({ role, content }) => ({ role, content })),
+          message: trimmedInput,
         }),
       });
 
@@ -267,21 +302,12 @@ export function OpenAIChat({
         throw new Error(payload?.error ?? "Chat request failed.");
       }
 
-      const payload = (await response.json()) as {
-        content?: string;
-        toolCalls?: ToolCallSummary[];
-      };
-
-      updateAssistantMessage(
-        nextAssistantMessageId,
-        payload.content ?? "I could not produce a response.",
-        payload.toolCalls ?? [],
-      );
-      await loadDrafts();
+      await Promise.all([loadChatMessages({ suppressErrors: true }), loadDrafts()]);
     } catch (submissionError) {
       setMessages((currentMessages) =>
         currentMessages.filter((message) => message.id !== nextAssistantMessageId),
       );
+      void loadChatMessages({ suppressErrors: true });
 
       const message =
         submissionError instanceof Error
@@ -292,6 +318,45 @@ export function OpenAIChat({
       showToast(message);
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function handleDeleteChat() {
+    if (isDeletingChat) {
+      return;
+    }
+
+    setError(null);
+    setIsDeletingChat(true);
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as
+          | {
+              error?: string;
+            }
+          | null;
+
+        throw new Error(payload?.error ?? "Unable to delete chat history.");
+      }
+
+      setMessages([introMessage]);
+      setInput("");
+      showToast("Chat history deleted.");
+    } catch (deleteError) {
+      const message =
+        deleteError instanceof Error
+          ? deleteError.message
+          : "Unable to delete chat history.";
+
+      setError(message);
+      showToast(message);
+    } finally {
+      setIsDeletingChat(false);
     }
   }
 
@@ -328,6 +393,8 @@ export function OpenAIChat({
     }
   }
 
+  const hasPersistedMessages = messages.length > 1;
+
   return (
     <section className="rounded-[2rem] border border-white/70 bg-white/85 p-5 shadow-[0_30px_80px_rgba(15,23,42,0.12)] backdrop-blur md:p-6">
       <div className="flex flex-col gap-5">
@@ -344,10 +411,43 @@ export function OpenAIChat({
               modifications from the queue on the right.
             </p>
           </div>
-          <div className="flex items-center gap-3 self-start">
+          <div className="flex flex-wrap items-center gap-3 self-start">
             <div className="rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-medium uppercase tracking-[0.2em] text-emerald-700">
-              {approvalMode.label}
+              {initialApprovalMode.label}
             </div>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <button
+                  aria-label="Delete chat history"
+                  className="flex h-11 w-11 items-center justify-center rounded-full border border-rose-200 bg-rose-50 text-rose-700 transition hover:border-rose-300 hover:bg-rose-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+                  disabled={!hasPersistedMessages || isDeletingChat || isSubmitting}
+                  type="button"
+                >
+                  <Trash2 aria-hidden="true" className="h-[18px] w-[18px]" strokeWidth={1.9} />
+                </button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete this chat?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This permanently removes every saved message in this
+                    conversation. Google Workspace approval drafts will stay in
+                    the queue.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={isDeletingChat}>
+                    Keep chat
+                  </AlertDialogCancel>
+                  <AlertDialogAction
+                    disabled={isDeletingChat}
+                    onClick={() => void handleDeleteChat()}
+                  >
+                    {isDeletingChat ? "Deleting..." : "Delete chat"}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
             <Link
               aria-label="Open settings"
               className="flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
@@ -392,6 +492,11 @@ export function OpenAIChat({
                   ) : null}
                 </article>
               ))}
+              {isLoadingMessages ? (
+                <p className="text-sm leading-6 text-slate-500">
+                  Loading conversation...
+                </p>
+              ) : null}
             </div>
 
             <form
@@ -400,7 +505,8 @@ export function OpenAIChat({
             >
               <div className="flex flex-col gap-3">
                 <textarea
-                  className="min-h-24 rounded-[1.25rem] border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                  className="min-h-24 rounded-[1.25rem] border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                  disabled={isLoadingMessages || isSubmitting || isDeletingChat}
                   onChange={(event) => setInput(event.target.value)}
                   onKeyDown={(event) => {
                     if (
@@ -422,11 +528,16 @@ export function OpenAIChat({
                 />
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs text-slate-500">
-                    {approvalMode.description}
+                    {initialApprovalMode.description}
                   </p>
                   <button
                     className="rounded-full bg-slate-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
-                    disabled={isSubmitting || !input.trim()}
+                    disabled={
+                      isLoadingMessages ||
+                      isSubmitting ||
+                      isDeletingChat ||
+                      !input.trim()
+                    }
                     type="submit"
                   >
                     {isSubmitting ? "Sending..." : "Send message"}

@@ -45,15 +45,21 @@ enum WorkspaceApprovalMode {
   DANGEROUS
 }
 
+enum OpenAIChatMessageRole {
+  USER
+  ASSISTANT
+}
+
 model User {
-  id           String        @id @default(cuid())
-  email        String        @unique
-  name         String?
-  image        String?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  buckets      Bucket[]
-  emailThreads EmailThread[]
+  id                 String              @id @default(cuid())
+  email              String              @unique
+  name               String?
+  image              String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  buckets            Bucket[]
+  emailThreads       EmailThread[]
+  openAIChatMessages OpenAIChatMessage[]
 }
 
 model Bucket {
@@ -114,4 +120,17 @@ model WorkspaceApprovalPreference {
   mode       WorkspaceApprovalMode @default(SAFE)
   createdAt  DateTime              @default(now())
   updatedAt  DateTime              @updatedAt
+}
+
+model OpenAIChatMessage {
+  id        String                @id @default(cuid())
+  role      OpenAIChatMessageRole
+  content   String
+  toolCalls Json?
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+  ownerId   String
+  owner     User                  @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId, createdAt])
 }
