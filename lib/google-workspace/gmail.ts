@@ -6,6 +6,7 @@ import {
 } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 
+import { getWorkspaceApprovalMode, requiresApproval } from "./approval-mode";
 import { googleApiRequest } from "./google-api";
 
 type GmailHeader = {
@@ -53,6 +54,15 @@ type EmailActionPayload = {
   labelId?: string;
   labelName?: string;
   threadId: string;
+};
+
+type EmailDraftRecordInput = {
+  action: PrepareEmailActionInput["action"];
+  labelId?: string;
+  labelName?: string;
+  ownerEmail: string;
+  requiresManualApproval: boolean;
+  thread: EmailThreadSummary;
 };
 
 export type EmailThreadSummary = {
@@ -308,47 +318,83 @@ export async function prepareEmailActionDraft(input: {
     throw new Error(`No Gmail label matched "${input.request.labelName}".`);
   }
 
+  const approvalMode = await getWorkspaceApprovalMode(input.ownerEmail);
+  const requiresManualApproval = requiresApproval({
+    affectedEmailCount: 1,
+    mode: approvalMode,
+    provider: "GMAIL",
+  });
+
+  const draft = await createEmailActionDraftRecord({
+    action: input.request.action,
+    labelId: resolvedLabel?.id,
+    labelName: resolvedLabel?.name ?? input.request.labelName,
+    ownerEmail: input.ownerEmail,
+    requiresManualApproval,
+    thread,
+  });
+
+  if (requiresManualApproval) {
+    return {
+      draftId: draft.id,
+      requiresApproval: true,
+      status: draft.status,
+      summary: draft.summary,
+    };
+  }
+
+  const executedDraft = await executeEmailActionDraft(input.accessToken, draft);
+
+  return {
+    draftId: executedDraft.id,
+    requiresApproval: false,
+    status: executedDraft.status,
+    summary: executedDraft.summary,
+  };
+}
+
+async function createEmailActionDraftRecord(input: EmailDraftRecordInput) {
   const draft = await prisma.integrationActionDraft.create({
     data: {
       ownerEmail: input.ownerEmail,
       provider: IntegrationProvider.GMAIL,
-      kind: mapActionToKind(input.request.action),
-      title: thread.subject,
+      kind: mapActionToKind(input.action),
+      status: input.requiresManualApproval
+        ? IntegrationActionStatus.PENDING
+        : IntegrationActionStatus.APPROVED,
+      title: input.thread.subject,
       summary: describeEmailAction(
-        input.request.action,
-        thread,
-        resolvedLabel?.name ?? input.request.labelName,
+        input.action,
+        input.thread,
+        input.labelName,
       ),
-      targetId: thread.id,
+      targetId: input.thread.id,
       beforeState: {
-        labelIds: thread.labelIds,
-        lastMessageAt: thread.lastMessageAt,
-        sender: thread.sender,
-        snippet: thread.snippet,
-        subject: thread.subject,
+        labelIds: input.thread.labelIds,
+        lastMessageAt: input.thread.lastMessageAt,
+        sender: input.thread.sender,
+        snippet: input.thread.snippet,
+        subject: input.thread.subject,
       },
       afterState: {
         labelIds: predictLabelIds(
-          thread.labelIds,
-          input.request.action,
-          resolvedLabel?.id,
+          input.thread.labelIds,
+          input.action,
+          input.labelId,
         ),
       },
       payload: {
-        action: input.request.action,
-        labelId: resolvedLabel?.id,
-        labelName: resolvedLabel?.name,
-        threadId: thread.id,
+        action: input.action,
+        labelId: input.labelId,
+        labelName: input.labelName,
+        threadId: input.thread.id,
       },
+      approvedAt: input.requiresManualApproval ? undefined : new Date(),
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
     },
   });
 
-  return {
-    draftId: draft.id,
-    summary: draft.summary,
-    status: draft.status,
-  };
+  return draft;
 }
 
 export async function executeEmailActionDraft(

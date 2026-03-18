@@ -39,6 +39,12 @@ enum IntegrationActionStatus {
   EXPIRED
 }
 
+enum WorkspaceApprovalMode {
+  SAFE
+  BULK_EMAIL_ONLY
+  DANGEROUS
+}
+
 model User {
   id           String        @id @default(cuid())
   email        String        @unique
@@ -101,4 +107,11 @@ model IntegrationActionDraft {
   updatedAt       DateTime                @updatedAt
 
   @@index([ownerEmail, status, createdAt])
+}
+
+model WorkspaceApprovalPreference {
+  ownerEmail String                @id
+  mode       WorkspaceApprovalMode @default(SAFE)
+  createdAt  DateTime              @default(now())
+  updatedAt  DateTime              @updatedAt
 }

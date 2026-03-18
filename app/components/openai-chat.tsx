@@ -23,58 +23,59 @@ type ActionDraft = {
   title: string | null;
 };
 
+type ApprovalModeOption = {
+  description: string;
+  label: string;
+  mode: "BULK_EMAIL_ONLY" | "DANGEROUS" | "SAFE";
+};
+
 type OpenAIChatProps = {
   firstName?: string;
 };
 
-function prettifyKey(key: string) {
-  return key
-    .replace(/([A-Z])/g, " $1")
-    .replace(/_/g, " ")
-    .replace(/^./, (value) => value.toUpperCase());
+function extractLabelName(summary: string) {
+  const matchedLabel = summary.match(/"([^"]+)" label/);
+
+  return matchedLabel?.[1] ?? null;
 }
 
-function formatStateValue(value: unknown) {
-  if (value === null || value === undefined) {
-    return "None";
+function getDraftActionLabel(draft: ActionDraft) {
+  switch (draft.kind) {
+    case "EMAIL_ARCHIVE":
+      return "Archive email";
+    case "EMAIL_MARK_SPAM":
+      return "Mark email as spam";
+    case "EMAIL_STAR":
+      return "Star email";
+    case "EMAIL_UNSTAR":
+      return "Remove star";
+    case "EMAIL_TRASH":
+      return "Move email to trash";
+    case "EMAIL_APPLY_LABEL": {
+      const labelName = extractLabelName(draft.summary);
+      return labelName ? `Add ${labelName} label` : "Add label";
+    }
+    case "EMAIL_REMOVE_LABEL": {
+      const labelName = extractLabelName(draft.summary);
+      return labelName ? `Remove ${labelName} label` : "Remove label";
+    }
+    case "CALENDAR_CREATE_EVENT":
+      return "Create event";
+    case "CALENDAR_UPDATE_EVENT":
+      return "Update event";
+    case "CALENDAR_DELETE_EVENT":
+      return "Delete event";
+    default:
+      return draft.summary;
   }
-
-  if (typeof value === "string") {
-    return value;
-  }
-
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-
-  if (Array.isArray(value)) {
-    return value.length ? value.join(", ") : "None";
-  }
-
-  return JSON.stringify(value);
 }
 
-function renderStateRows(state: unknown) {
-  if (!state || typeof state !== "object" || Array.isArray(state)) {
-    return (
-      <p className="text-sm leading-6 text-slate-600">{formatStateValue(state)}</p>
-    );
-  }
+function getDraftCountLabel(draft: ActionDraft) {
+  return draft.provider === "GMAIL" ? "1 email" : "1 event";
+}
 
-  return (
-    <div className="space-y-2">
-      {Object.entries(state).map(([key, value]) => (
-        <div key={key} className="rounded-2xl bg-slate-50 px-3 py-2">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-            {prettifyKey(key)}
-          </p>
-          <p className="mt-1 text-sm leading-6 text-slate-700">
-            {formatStateValue(value)}
-          </p>
-        </div>
-      ))}
-    </div>
-  );
+function getDraftScopeLabel(draft: ActionDraft) {
+  return draft.provider === "GMAIL" ? "Gmail" : "Calendar";
 }
 
 export function OpenAIChat({ firstName }: OpenAIChatProps) {
@@ -86,14 +87,18 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
     },
   ]);
   const [drafts, setDrafts] = useState<ActionDraft[]>([]);
+  const [approvalMode, setApprovalMode] = useState<ApprovalModeOption | null>(null);
+  const [approvalModeOptions, setApprovalModeOptions] = useState<ApprovalModeOption[]>([]);
   const [input, setInput] = useState("");
   const [isLoadingDrafts, setIsLoadingDrafts] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isUpdatingApprovalMode, setIsUpdatingApprovalMode] = useState(false);
   const [pendingDraftId, setPendingDraftId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     void loadDrafts();
+    void loadApprovalMode();
   }, []);
 
   function updateAssistantMessage(messageId: string, content: string) {
@@ -131,6 +136,36 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
       );
     } finally {
       setIsLoadingDrafts(false);
+    }
+  }
+
+  async function loadApprovalMode() {
+    try {
+      const response = await fetch("/api/approval-mode");
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as
+          | {
+              error?: string;
+            }
+          | null;
+
+        throw new Error(payload?.error ?? "Unable to load approval mode.");
+      }
+
+      const payload = (await response.json()) as {
+        approvalMode?: ApprovalModeOption;
+        options?: ApprovalModeOption[];
+      };
+
+      setApprovalMode(payload.approvalMode ?? null);
+      setApprovalModeOptions(payload.options ?? []);
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Unable to load approval mode.",
+      );
     }
   }
 
@@ -233,6 +268,48 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
     }
   }
 
+  async function handleApprovalModeChange(mode: ApprovalModeOption["mode"]) {
+    setIsUpdatingApprovalMode(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/approval-mode", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ mode }),
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as
+          | {
+              error?: string;
+            }
+          | null;
+
+        throw new Error(payload?.error ?? "Unable to update approval mode.");
+      }
+
+      const payload = (await response.json()) as {
+        approvalMode?: ApprovalModeOption;
+        options?: ApprovalModeOption[];
+      };
+
+      setApprovalMode(payload.approvalMode ?? null);
+      setApprovalModeOptions(payload.options ?? []);
+      await loadDrafts();
+    } catch (modeError) {
+      setError(
+        modeError instanceof Error
+          ? modeError.message
+          : "Unable to update approval mode.",
+      );
+    } finally {
+      setIsUpdatingApprovalMode(false);
+    }
+  }
+
   return (
     <section className="rounded-[2rem] border border-white/70 bg-white/85 p-5 shadow-[0_30px_80px_rgba(15,23,42,0.12)] backdrop-blur md:p-6">
       <div className="flex flex-col gap-5">
@@ -251,11 +328,52 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
           </div>
           <div className="flex items-center gap-3 self-start">
             <div className="rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-medium uppercase tracking-[0.2em] text-emerald-700">
-              Approval required
+              {approvalMode?.label ?? "Loading mode"}
             </div>
             <AuthButton className="px-4 py-2.5 text-sm" isAuthenticated />
           </div>
         </div>
+
+        <section className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="max-w-2xl">
+              <p className="text-sm font-semibold uppercase tracking-[0.24em] text-slate-500">
+                Permission policy
+              </p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                Choose when Gmail and Calendar changes should stop for review.
+              </p>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[38rem]">
+              {approvalModeOptions.map((option) => {
+                const isSelected = approvalMode?.mode === option.mode;
+
+                return (
+                  <button
+                    key={option.mode}
+                    className={`rounded-[1.25rem] border px-4 py-3 text-left transition ${
+                      isSelected
+                        ? "border-slate-950 bg-slate-950 text-white"
+                        : "border-slate-200 bg-white text-slate-800 hover:border-slate-300"
+                    }`}
+                    disabled={isUpdatingApprovalMode}
+                    onClick={() => void handleApprovalModeChange(option.mode)}
+                    type="button"
+                  >
+                    <p className="text-sm font-semibold">{option.label}</p>
+                    <p
+                      className={`mt-1 text-xs leading-5 ${
+                        isSelected ? "text-slate-300" : "text-slate-500"
+                      }`}
+                    >
+                      {option.description}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </section>
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_24rem]">
           <div className="flex min-h-[24rem] flex-col overflow-hidden rounded-[1.5rem] border border-slate-200 bg-slate-50 xl:h-[32rem] xl:min-h-0">
@@ -282,13 +400,28 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
                 <textarea
                   className="min-h-24 rounded-[1.25rem] border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
                   onChange={(event) => setInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (
+                      event.key !== "Enter" ||
+                      event.shiftKey ||
+                      event.altKey ||
+                      event.ctrlKey ||
+                      event.metaKey ||
+                      event.nativeEvent.isComposing
+                    ) {
+                      return;
+                    }
+
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }}
                   placeholder="Try: find my most recent email, or draft a change to star a thread and queue it for approval."
                   value={input}
                 />
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs text-slate-500">
-                    The assistant can read Google data directly, but queued
-                    changes only execute after you approve them.
+                    {approvalMode?.description ??
+                      "The assistant can read Google data directly and will follow your selected approval policy for changes."}
                   </p>
                   <button
                     className="rounded-full bg-slate-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
@@ -313,7 +446,7 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
                     Approval queue
                   </p>
                   <p className="mt-1 text-sm leading-6 text-slate-300">
-                    Gmail and Calendar changes stay here until you approve them.
+                    Each draft shows the change and how many items it affects.
                   </p>
                 </div>
                 <div className="rounded-full border border-slate-700 px-3 py-1 text-xs font-medium text-slate-300">
@@ -334,40 +467,25 @@ export function OpenAIChat({ firstName }: OpenAIChatProps) {
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
-                            {draft.provider.replaceAll("_", " ")}
-                          </p>
-                          <h3 className="mt-1 text-base font-semibold text-white">
-                            {draft.title ?? draft.summary}
+                          <h3 className="text-base font-semibold text-white">
+                            {getDraftActionLabel(draft)}
                           </h3>
+                          <p className="mt-1 text-sm leading-6 text-slate-300">
+                            {draft.title ?? draft.summary}
+                          </p>
                         </div>
                         <p className="rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-200">
                           Pending
                         </p>
                       </div>
 
-                      <p className="mt-3 text-sm leading-6 text-slate-300">
-                        {draft.summary}
-                      </p>
-
-                      <div className="mt-4 grid gap-3">
-                        <div>
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                            Current state
-                          </p>
-                          <div className="mt-2 rounded-[1rem] bg-white p-3 text-slate-900">
-                            {renderStateRows(draft.beforeState)}
-                          </div>
-                        </div>
-
-                        <div>
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                            Proposed state
-                          </p>
-                          <div className="mt-2 rounded-[1rem] bg-white p-3 text-slate-900">
-                            {renderStateRows(draft.afterState)}
-                          </div>
-                        </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <p className="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-200">
+                          {getDraftScopeLabel(draft)}
+                        </p>
+                        <p className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-200">
+                          {getDraftCountLabel(draft)}
+                        </p>
                       </div>
 
                       <p className="mt-3 text-xs leading-5 text-slate-400">

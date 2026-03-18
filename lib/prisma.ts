@@ -22,12 +22,16 @@ function createPrismaClient() {
   });
 }
 
-function hasIntegrationDraftModel(client: PrismaClient | undefined) {
-  return Boolean(client && "integrationActionDraft" in client);
+function hasRequiredModels(client: PrismaClient | undefined) {
+  return Boolean(
+    client &&
+      "integrationActionDraft" in client &&
+      "workspaceApprovalPreference" in client,
+  );
 }
 
 const prismaClient =
-  hasIntegrationDraftModel(globalForPrisma.prisma) && globalForPrisma.prisma
+  hasRequiredModels(globalForPrisma.prisma) && globalForPrisma.prisma
     ? globalForPrisma.prisma
     : createPrismaClient();
 

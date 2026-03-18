@@ -6,6 +6,7 @@ import {
 } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 
+import { getWorkspaceApprovalMode, requiresApproval } from "./approval-mode";
 import { googleApiRequest } from "./google-api";
 
 type CalendarEventDateTime = {
@@ -55,6 +56,25 @@ type CalendarActionPayload = {
     summary?: string;
   };
   etag?: string;
+  sendUpdates: "all" | "externalOnly" | "none";
+};
+
+type CalendarDraftRecordInput = {
+  action: PrepareCalendarActionInput["action"];
+  draftTitle: string;
+  eventId?: string;
+  existingEvent: CalendarEventSummary | null;
+  nextState:
+    | {
+        description?: string;
+        end?: CalendarEventDateTime;
+        location?: string;
+        start?: CalendarEventDateTime;
+        summary?: string;
+      }
+    | undefined;
+  ownerEmail: string;
+  requiresManualApproval: boolean;
   sendUpdates: "all" | "externalOnly" | "none";
 };
 
@@ -238,37 +258,71 @@ export async function prepareCalendarActionDraft(input: {
   const draftTitle =
     input.request.summary ?? existingEvent?.summary ?? "Untitled event";
 
-  const draft = await prisma.integrationActionDraft.create({
+  const approvalMode = await getWorkspaceApprovalMode(input.ownerEmail);
+  const requiresManualApproval = requiresApproval({
+    mode: approvalMode,
+    provider: "GOOGLE_CALENDAR",
+  });
+  const draft = await createCalendarActionDraftRecord({
+    action: input.request.action,
+    draftTitle,
+    eventId: existingEvent?.id,
+    existingEvent,
+    nextState,
+    ownerEmail: input.ownerEmail,
+    requiresManualApproval,
+    sendUpdates,
+  });
+
+  if (requiresManualApproval) {
+    return {
+      draftId: draft.id,
+      requiresApproval: true,
+      status: draft.status,
+      summary: draft.summary,
+    };
+  }
+
+  const executedDraft = await executeCalendarActionDraft(input.accessToken, draft);
+
+  return {
+    draftId: executedDraft.id,
+    requiresApproval: false,
+    status: executedDraft.status,
+    summary: executedDraft.summary,
+  };
+}
+
+async function createCalendarActionDraftRecord(input: CalendarDraftRecordInput) {
+  return prisma.integrationActionDraft.create({
     data: {
       ownerEmail: input.ownerEmail,
       provider: IntegrationProvider.GOOGLE_CALENDAR,
-      kind: mapActionToKind(input.request.action),
-      title: draftTitle,
-      summary: describeCalendarAction(input.request.action, draftTitle),
-      targetId: existingEvent?.id,
-      beforeState: existingEvent ?? undefined,
+      kind: mapActionToKind(input.action),
+      status: input.requiresManualApproval
+        ? IntegrationActionStatus.PENDING
+        : IntegrationActionStatus.APPROVED,
+      title: input.draftTitle,
+      summary: describeCalendarAction(input.action, input.draftTitle),
+      targetId: input.eventId,
+      beforeState: input.existingEvent ?? undefined,
       afterState:
-        input.request.action === "DELETE"
+        input.action === "DELETE"
           ? {
               deleted: true,
             }
-          : nextState ?? undefined,
+          : input.nextState ?? undefined,
       payload: {
-        action: input.request.action,
-        eventId: existingEvent?.id,
-        eventPatch: nextState,
-        etag: existingEvent?.etag ?? undefined,
-        sendUpdates,
+        action: input.action,
+        eventId: input.eventId,
+        eventPatch: input.nextState,
+        etag: input.existingEvent?.etag ?? undefined,
+        sendUpdates: input.sendUpdates,
       },
+      approvedAt: input.requiresManualApproval ? undefined : new Date(),
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
     },
   });
-
-  return {
-    draftId: draft.id,
-    summary: draft.summary,
-    status: draft.status,
-  };
 }
 
 export async function executeCalendarActionDraft(

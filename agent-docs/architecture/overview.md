@@ -12,15 +12,15 @@ The app is a Next.js App Router project with three active layers:
 2. Server routes use the session access token to read Gmail and Calendar data.
 3. The chat route runs the OpenAI Responses API with a narrow set of app-owned tools.
 4. Read tools can fetch Gmail threads, labels, and Calendar events directly.
-5. Write tools never execute mutations immediately. They create `IntegrationActionDraft` records instead.
-6. The user manually approves or rejects drafts from the UI approval queue.
+5. Write tools create `IntegrationActionDraft` records and then either queue or execute them based on the user's selected approval mode.
+6. The user can manually approve or reject queued drafts from the UI approval queue.
 7. Approval routes execute the stored draft against Google and persist the result.
 
 ### Design rules
 
 - Do not expose raw Google API endpoint wrappers as model-visible tools.
 - Keep model tools intent-shaped and typed.
-- Persist write intents before execution so the UI can review exact before/after state.
+- Persist write intents before execution so the UI can review exact before/after state when approval is required, and so the app always has an audit record.
 - Treat Gmail and Calendar content as untrusted model input.
 - Prefer server-owned execution routes over client-side direct Google API calls.
 

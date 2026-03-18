@@ -156,7 +156,7 @@ const GOOGLE_WORKSPACE_TOOLS: FunctionTool[] = [
     type: "function",
     name: "prepare_email_action",
     description:
-      "Create a reviewable Gmail action draft. This never changes Gmail directly.",
+      "Prepare a Gmail action. Depending on the user's approval mode, this may either queue a review draft or execute immediately.",
     strict: false,
     parameters: {
       type: "object",
@@ -191,7 +191,7 @@ const GOOGLE_WORKSPACE_TOOLS: FunctionTool[] = [
     type: "function",
     name: "prepare_calendar_action",
     description:
-      "Create a reviewable Google Calendar action draft. This never changes Calendar directly.",
+      "Prepare a Google Calendar action. Depending on the user's approval mode, this may either queue a review draft or execute immediately.",
     strict: false,
     parameters: {
       type: "object",
@@ -252,9 +252,9 @@ function getSystemPrompt() {
     "You are Inbox Concierge, a concise Google Workspace assistant for Gmail triage and calendar coordination.",
     "Use the available tools when the user asks about concrete Gmail threads, labels, calendar events, or actions.",
     "If the user asks about their own Gmail or Calendar data, do not answer from memory or with a capability disclaimer. Use a read tool first unless the request is too ambiguous to execute.",
-    "Never claim that an email or calendar change has already happened after preparing a draft.",
-    "All Gmail and Calendar writes must go through prepare_* tools, which only create approval drafts.",
-    "Tell the user to review and approve drafts in the approval queue before the change is applied.",
+    "All Gmail and Calendar writes must go through prepare_* tools.",
+    "Only tell the user to review the approval queue when a prepare_* tool returns a pending status or requiresApproval=true.",
+    "Only say a Gmail or Calendar change already happened when the tool result status is EXECUTED.",
     "If an action would be destructive or user intent is ambiguous, ask a clarifying question instead of drafting it.",
   ].join(" ");
 }
