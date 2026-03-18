@@ -487,6 +487,29 @@ export async function listRecentInboxThreads(
     maxResults?: number;
   },
 ) {
+  const threadIds = await listRecentInboxThreadIds(accessToken, input);
+
+  return getEmailThreads(accessToken, threadIds);
+}
+
+export async function getEmailThread(accessToken: string, threadId: string) {
+  const thread = await getGmailThread(accessToken, threadId);
+
+  return summarizeThread(thread);
+}
+
+export async function getEmailThreads(accessToken: string, threadIds: string[]) {
+  return mapThreadsWithConcurrency(threadIds, (threadId) =>
+    getEmailThread(accessToken, threadId),
+  );
+}
+
+export async function listRecentInboxThreadIds(
+  accessToken: string,
+  input?: {
+    maxResults?: number;
+  },
+) {
   const maxResults = Math.max(input?.maxResults ?? 1, 1);
   const response = await googleApiRequest<{ threads?: Array<{ id: string }> }>(
     accessToken,
@@ -498,17 +521,8 @@ export async function listRecentInboxThreads(
       },
     },
   );
-  const threadIds = response.threads?.map((thread) => thread.id) ?? [];
 
-  return mapThreadsWithConcurrency(threadIds, (threadId) =>
-    getEmailThread(accessToken, threadId),
-  );
-}
-
-export async function getEmailThread(accessToken: string, threadId: string) {
-  const thread = await getGmailThread(accessToken, threadId);
-
-  return summarizeThread(thread);
+  return response.threads?.map((thread) => thread.id) ?? [];
 }
 
 function normalizeThreadIds(input: PrepareEmailActionInput) {

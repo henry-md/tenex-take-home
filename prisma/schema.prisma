@@ -156,7 +156,6 @@ model OpenAIRateLimitBucket {
   @@id([ownerEmail, windowType, windowStart])
   @@index([windowType, windowStart])
 }
-
 model InboxClassificationCache {
   id           String   @id @default(cuid())
   cacheKey     String

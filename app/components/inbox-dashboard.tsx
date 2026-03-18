@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  startTransition,
   useEffect,
   useRef,
   useState,
@@ -164,6 +163,16 @@ function formatDuration(durationMs: number) {
 }
 
 function showInboxLoadToasts(payload: InboxHomepageResponse) {
+  if (payload.gmailFetch.durationMs === 0) {
+    toast.success(
+      payload.sorting.cacheHit
+        ? "Loaded cached inbox snapshot."
+        : "Loaded cached inbox snapshot and refreshed bucket memberships.",
+      { duration: INBOX_LOAD_TOAST_DURATION_MS },
+    );
+    return;
+  }
+
   toast.success(
     `Fetched ${payload.gmailFetch.fetchedThreadCount} Gmail thread${payload.gmailFetch.fetchedThreadCount === 1 ? "" : "s"} in ${formatDuration(payload.gmailFetch.durationMs)}.`,
     { duration: INBOX_LOAD_TOAST_DURATION_MS },
@@ -174,10 +183,19 @@ function showInboxLoadToasts(payload: InboxHomepageResponse) {
   );
 }
 
-async function fetchInboxHomepage() {
-  const response = await fetch("/api/inbox", {
+async function fetchInboxHomepage(options?: { refresh?: boolean }) {
+  const searchParams = new URLSearchParams();
+
+  if (options?.refresh) {
+    searchParams.set("refresh", "1");
+  }
+
+  const response = await fetch(
+    `/api/inbox${searchParams.size ? `?${searchParams.toString()}` : ""}`,
+    {
     cache: "no-store",
-  });
+    },
+  );
 
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as
@@ -215,6 +233,8 @@ export function InboxDashboard({
   initialInboxThreadLimit,
 }: InboxDashboardProps) {
   const initialLoadStartedRef = useRef(false);
+  const isMountedRef = useRef(true);
+  const latestLoadRequestIdRef = useRef(0);
   const [inbox, setInbox] = useState<InboxHomepageData | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isHeroVisible, setIsHeroVisible] = useState(true);
@@ -223,22 +243,42 @@ export function InboxDashboard({
   const [isSorting, setIsSorting] = useState(true);
   const [unsortedThreadCount, setUnsortedThreadCount] = useState(0);
 
-  async function loadInbox(options?: { showSuccessToast?: boolean; silent?: boolean }) {
+  async function loadInbox(options?: {
+    isInitialLoad?: boolean;
+    showSuccessToast?: boolean;
+    silent?: boolean;
+  }) {
+    const requestId = latestLoadRequestIdRef.current + 1;
+
+    latestLoadRequestIdRef.current = requestId;
+
+    if (options?.isInitialLoad) {
+      setIsLoading(true);
+    }
+
+    setErrorMessage(null);
     setIsSorting(true);
 
     try {
-      const payload = await fetchInboxHomepage();
-
-      startTransition(() => {
-        setErrorMessage(null);
-        setInbox(payload.inbox);
-        setUnsortedThreadCount(0);
+      const payload = await fetchInboxHomepage({
+        refresh: !options?.isInitialLoad,
       });
+
+      if (!isMountedRef.current || latestLoadRequestIdRef.current !== requestId) {
+        return;
+      }
+
+      setInbox(payload.inbox);
+      setUnsortedThreadCount(0);
 
       if (options?.showSuccessToast) {
         showInboxLoadToasts(payload);
       }
     } catch (error) {
+      if (!isMountedRef.current || latestLoadRequestIdRef.current !== requestId) {
+        return;
+      }
+
       const message =
         error instanceof Error ? error.message : "Unable to load inbox buckets.";
 
@@ -248,18 +288,40 @@ export function InboxDashboard({
         toast.error(message);
       }
     } finally {
+      if (!isMountedRef.current || latestLoadRequestIdRef.current !== requestId) {
+        return;
+      }
+
       setIsLoading(false);
       setIsRefreshing(false);
       setIsSorting(false);
     }
   }
 
+  async function checkForUpdates() {
+    const payload = await fetchInboxRefreshStatus();
+
+    if (!isMountedRef.current) {
+      return payload;
+    }
+
+    setUnsortedThreadCount(payload.unsortedThreadCount);
+
+    return payload;
+  }
+
   useEffect(() => {
+    isMountedRef.current = true;
+
     const storedValue = window.localStorage.getItem("inbox-dashboard-hero-hidden");
 
     if (storedValue === "true") {
       setIsHeroVisible(false);
     }
+
+    return () => {
+      isMountedRef.current = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -271,47 +333,11 @@ export function InboxDashboard({
 
     initialLoadStartedRef.current = true;
 
-    let isActive = true;
-
-    void (async () => {
-      setIsSorting(true);
-
-      try {
-        const payload = await fetchInboxHomepage();
-
-        if (!isActive) {
-          return;
-        }
-
-        startTransition(() => {
-          setErrorMessage(null);
-          setInbox(payload.inbox);
-        });
-
-        showInboxLoadToasts(payload);
-      } catch (error) {
-        if (!isActive) {
-          return;
-        }
-
-        setErrorMessage(
-          error instanceof Error
-            ? error.message
-            : "Unable to load inbox buckets.",
-        );
-      } finally {
-        if (!isActive) {
-          return;
-        }
-
-        setIsLoading(false);
-        setIsSorting(false);
-      }
-    })();
-
-    return () => {
-      isActive = false;
-    };
+    void loadInbox({
+      isInitialLoad: true,
+      showSuccessToast: true,
+      silent: true,
+    });
   }, []);
 
   useEffect(() => {
@@ -321,19 +347,13 @@ export function InboxDashboard({
 
     let isActive = true;
 
-    async function checkForUpdates() {
+    async function pollForUpdates() {
       if (document.visibilityState === "hidden") {
         return;
       }
 
       try {
-        const payload = await fetchInboxRefreshStatus();
-
-        if (!isActive) {
-          return;
-        }
-
-        setUnsortedThreadCount(payload.unsortedThreadCount);
+        await checkForUpdates();
       } catch (error) {
         if (!isActive) {
           return;
@@ -344,14 +364,14 @@ export function InboxDashboard({
     }
 
     const intervalId = window.setInterval(() => {
-      void checkForUpdates();
+      void pollForUpdates();
     }, INBOX_STATUS_POLL_INTERVAL_MS);
     const handleVisibilityChange = () => {
       if (document.visibilityState !== "visible") {
         return;
       }
 
-      void checkForUpdates();
+      void pollForUpdates();
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -364,12 +384,25 @@ export function InboxDashboard({
   }, [inbox]);
 
   async function handleRefresh() {
-    if (isRefreshing) {
+    if (isRefreshing || isLoading || isSorting) {
       return;
     }
 
     setIsRefreshing(true);
-    await loadInbox({ showSuccessToast: true });
+
+    try {
+      const status = await checkForUpdates();
+
+      if (!status.hasUpdates && inbox) {
+        setIsRefreshing(false);
+        toast.success("Inbox is already up to date.");
+        return;
+      }
+
+      await loadInbox({ showSuccessToast: true });
+    } catch {
+      await loadInbox({ showSuccessToast: true });
+    }
   }
 
   function handleDismissHero() {
@@ -464,7 +497,7 @@ export function InboxDashboard({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <button
             className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
-            disabled={isRefreshing}
+            disabled={isRefreshing || isLoading || isSorting}
             onClick={() => void handleRefresh()}
             type="button"
           >
@@ -503,7 +536,7 @@ export function InboxDashboard({
 
           <button
             className="inline-flex items-center justify-center gap-2 rounded-full border border-amber-300 bg-white px-4 py-2.5 text-sm font-medium text-amber-900 transition hover:border-amber-400 hover:bg-amber-100/40 disabled:cursor-not-allowed disabled:text-amber-500"
-            disabled={isRefreshing}
+            disabled={isRefreshing || isLoading || isSorting}
             onClick={() => void handleRefresh()}
             type="button"
           >

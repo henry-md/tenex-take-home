@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import { getServerSession, type Session } from "next-auth";
 
 import { authOptions } from "@/auth";
+import {
+  GoogleApiError,
+  serializeGoogleApiError,
+} from "@/lib/google-workspace/google-api";
 import { loadInboxHomepage } from "@/lib/inbox/classification";
 
 function getInboxOwner(session: Session | null) {
@@ -18,7 +22,7 @@ function getInboxOwner(session: Session | null) {
   };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const session = await getServerSession(authOptions);
   const owner = getInboxOwner(session);
 
@@ -32,11 +36,13 @@ export async function GET() {
   }
 
   try {
+    const { searchParams } = new URL(request.url);
     const result = await loadInboxHomepage({
       accessToken: session.accessToken,
       ownerEmail: owner.email,
       ownerImage: owner.image,
       ownerName: owner.name,
+      refresh: searchParams.get("refresh") === "1",
     });
 
     return NextResponse.json(
@@ -63,6 +69,12 @@ export async function GET() {
       error,
       ownerEmail: owner.email,
     });
+
+    if (error instanceof GoogleApiError) {
+      return NextResponse.json(serializeGoogleApiError(error), {
+        status: error.status,
+      });
+    }
 
     return NextResponse.json(
       {

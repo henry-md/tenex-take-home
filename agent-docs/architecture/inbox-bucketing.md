@@ -8,13 +8,13 @@ Make the authenticated homepage inbox-first by loading the latest configured Gma
 
 1. `GET /api/inbox` authenticates the Google session and loads the owner identity.
 2. `lib/inbox/classification.ts` ensures the owner's default bucket taxonomy exists in Prisma.
-3. The server fetches the latest inbox threads via `listRecentInboxThreads`, using the owner's saved limit or `DEFAULT_INBOX_THREAD_LIMIT`.
-4. Deterministic heuristics classify obvious newsletters, finance mail, auto-archive candidates, important threads, and personal mail first.
-5. Remaining threads are sent to the OpenAI Responses API in batches with a compact structured payload.
-6. Low-confidence or failed LLM classifications fall back to `Can wait`.
-7. Before classification runs, the server computes a human-readable cache key from the active thread limit, latest thread fingerprint, and bucket prompt configuration.
-8. When that cache key matches a persisted inbox cache row, the app reuses the stored grouped results instead of reclassifying.
-9. The client renders grouped thread summaries only: subject, sender, preview, and timestamp.
+3. The server stores one active inbox-state payload per owner in `InboxClassificationCache` instead of caching only a rendered board.
+4. That payload keeps the ordered inbox thread ids, normalized cached thread snapshots, and per-thread/per-bucket membership decisions.
+5. Deterministic heuristics classify obvious newsletters, finance mail, auto-archive candidates, important threads, and personal mail first, but those heuristic matches are additive rather than exclusive.
+6. The OpenAI Responses API returns a list of bucket names for each thread, so one thread can appear in multiple buckets.
+7. When Gmail refreshes, only changed thread snapshots are reclassified across all buckets.
+8. When bucket prompts change, only stale bucket memberships are recomputed from cached thread snapshots.
+9. The client renders grouped thread summaries only: subject, sender, preview, and timestamp. Because bucket membership is many-to-many, the same thread can appear in multiple bucket groups.
 
 ## Custom buckets
 
@@ -23,6 +23,7 @@ Make the authenticated homepage inbox-first by loading the latest configured Gma
 - Settings bucket order is persisted via the bucket `sortOrder` field so drag reordering survives refreshes.
 - Default buckets ship with starter prompts that guide the LLM toward the intended category semantics.
 - Custom buckets are first-class options in the LLM prompt, not post-processing filters.
+- Adding or editing one bucket no longer forces the server to re-fetch Gmail or reclassify every bucket for every cached thread.
 
 ## UI boundary
 
@@ -41,7 +42,12 @@ Make the authenticated homepage inbox-first by loading the latest configured Gma
 ## Inbox timing instrumentation
 
 - `loadInboxHomepage` records Gmail fetch time separately from inbox sorting time.
-- Gmail fetch time covers `listRecentInboxThreads`, including listing inbox thread ids and fetching thread summaries from Gmail.
-- Sorting time starts after Gmail data is loaded and includes cache lookup, heuristic classification, optional LLM classification, fallback assignment, and cache write.
+- Gmail fetch time covers inbox refresh loads only. Cached dashboard loads can legitimately report `0ms` Gmail fetch time because they reuse the stored inbox snapshot.
+- Refresh loads first list inbox thread ids from Gmail, then fetch summaries only for the current top thread set.
+- Sorting time includes cache lookup, selective reclassification for changed threads or stale bucket memberships, and cache write.
 - `GET /api/inbox` returns both timings so the dashboard can show two success toasts: one for Gmail fetch and one for sorting.
-- A cache hit only skips reclassification work. Gmail fetch still runs first because the cache key depends on the current inbox snapshot.
+- A cache hit on the default dashboard load can avoid Gmail entirely.
+
+## Related cache doc
+
+- `agent-docs/architecture/inbox-cache.md`

@@ -3,12 +3,12 @@ import { createHash } from "node:crypto";
 import OpenAI from "openai";
 
 import { BucketKind, type Prisma } from "@/generated/prisma/client";
-import type { EmailThreadSummary } from "@/lib/google-workspace/gmail";
-import { listRecentInboxThreads } from "@/lib/google-workspace/gmail";
 import {
-  getDefaultInboxThreadLimit,
-  getWorkspaceInboxThreadLimit,
-} from "@/lib/google-workspace/inbox-thread-limit";
+  getEmailThreads,
+  listRecentInboxThreadIds,
+  type EmailThreadSummary,
+} from "@/lib/google-workspace/gmail";
+import { getWorkspaceInboxThreadLimit } from "@/lib/google-workspace/inbox-thread-limit";
 import { prisma } from "@/lib/prisma";
 import { upsertAppUser } from "@/lib/users";
 
@@ -146,14 +146,14 @@ type ThreadSignals = {
 };
 
 type FinalClassification = {
-  bucketName: string;
+  bucketNames: string[];
   confidence: number;
   rationale: string;
   source: "fallback" | "heuristic" | "llm";
 };
 
 export type InboxThreadItem = {
-  bucketName: string;
+  bucketNames: string[];
   lastMessageAt: string | null;
   preview: string;
   sender: string | null;
@@ -195,6 +195,46 @@ export type InboxRefreshStatus = {
   unsortedThreadCount: number;
 };
 
+type CachedThreadSnapshot = {
+  body: string;
+  fingerprint: string;
+  labelIds: string[];
+  lastMessageAt: string | null;
+  preview: string;
+  sender: string | null;
+  subject: string;
+  threadId: string;
+};
+
+type CachedBucketMembership = {
+  applies: boolean;
+  bucketPromptHash: string;
+  confidence: number;
+  rationale: string;
+  source: FinalClassification["source"];
+  threadFingerprint: string;
+};
+
+type InboxStatePayload = {
+  bucketMembershipsByThreadId: Record<string, Record<string, CachedBucketMembership>>;
+  configuredThreadLimit: number;
+  threadIds: string[];
+  threadsById: Record<string, CachedThreadSnapshot>;
+  version: 2;
+};
+
+type BucketMembershipClassification = {
+  applies: boolean;
+  confidence: number;
+  rationale: string;
+  source: FinalClassification["source"];
+};
+
+const INBOX_STATE_CACHE_KEY = "inbox-state-v2";
+const INBOX_STATE_CACHE_KEY_HASH = createHash("sha256")
+  .update(INBOX_STATE_CACHE_KEY)
+  .digest("hex");
+
 const MIN_INBOX_CLASSIFICATION_BATCH_SIZE = 1;
 const MAX_INBOX_CLASSIFICATION_BATCH_SIZE = 100;
 const FALLBACK_INBOX_CLASSIFICATION_BATCH_SIZE = 40;
@@ -218,101 +258,140 @@ function getInboxClassificationBatchSize() {
   );
 }
 
-function slugifyKeyPart(value: string, maxLength = 24) {
-  const normalized = value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-  return (normalized || "empty").slice(0, maxLength);
-}
-
 function getBucketPrompt(bucket: BucketRecord) {
   return bucket.description?.trim() || `Use ${bucket.name} when it is the best fit.`;
 }
 
-function getLatestThreadFingerprint(threads: EmailThreadSummary[]) {
-  const latestThread = threads.reduce<EmailThreadSummary | null>((latest, thread) => {
-    const latestTimestamp = latest?.lastMessageAt
-      ? new Date(latest.lastMessageAt).getTime()
-      : 0;
-    const currentTimestamp = thread.lastMessageAt
-      ? new Date(thread.lastMessageAt).getTime()
-      : 0;
-
-    if (!latest || currentTimestamp >= latestTimestamp) {
-      return thread;
-    }
-
-    return latest;
-  }, null);
-
-  return {
-    threadId: latestThread?.id ?? "none",
-    timestamp: latestThread?.lastMessageAt ?? "none",
-  };
-}
-
-function buildInboxCacheKey(input: {
-  buckets: BucketRecord[];
-  defaultInboxThreadLimit: number;
-  inboxThreadLimit: number;
-  threads: EmailThreadSummary[];
-}) {
-  const latestThread = getLatestThreadFingerprint(input.threads);
-  const bucketSegments = input.buckets.map((bucket) => {
-    const prompt = getBucketPrompt(bucket);
-    const promptHash = createHash("sha256").update(prompt).digest("hex").slice(0, 8);
-
-    return [
-      slugifyKeyPart(bucket.name, 18),
-      `${slugifyKeyPart(prompt, 28)}-${promptHash}`,
-    ].join("-");
-  });
-
-  return [
-    `default-limit-${input.defaultInboxThreadLimit}`,
-    `limit-${input.inboxThreadLimit}`,
-    `latest-${slugifyKeyPart(latestThread.threadId, 18)}-${slugifyKeyPart(latestThread.timestamp, 30)}`,
-    `buckets-${bucketSegments.join("__") || "none"}`,
-  ].join("__");
-}
-
-function getInboxCacheKeyHash(cacheKey: string) {
-  return createHash("sha256").update(cacheKey).digest("hex");
-}
-
-function parseCachedInboxHomepageData(value: unknown): InboxHomepageData | null {
+function parseInboxStatePayload(value: unknown): InboxStatePayload | null {
   if (!value || typeof value !== "object") {
     return null;
   }
 
-  const candidate = value as Partial<InboxHomepageData>;
+  const candidate = value as Partial<InboxStatePayload>;
 
   if (
-    typeof candidate.bucketCount !== "number" ||
+    candidate.version !== 2 ||
     typeof candidate.configuredThreadLimit !== "number" ||
-    typeof candidate.totalThreads !== "number" ||
-    !Array.isArray(candidate.buckets)
+    !Array.isArray(candidate.threadIds) ||
+    !candidate.threadsById ||
+    typeof candidate.threadsById !== "object" ||
+    !candidate.bucketMembershipsByThreadId ||
+    typeof candidate.bucketMembershipsByThreadId !== "object"
   ) {
     return null;
   }
 
-  return candidate as InboxHomepageData;
+  return candidate as InboxStatePayload;
 }
 
-function flattenInboxThreads(inbox: InboxHomepageData) {
-  return inbox.buckets.flatMap((bucket) => bucket.threads);
+function createEmptyInboxStatePayload(configuredThreadLimit: number): InboxStatePayload {
+  return {
+    bucketMembershipsByThreadId: {},
+    configuredThreadLimit,
+    threadIds: [],
+    threadsById: {},
+    version: 2,
+  };
 }
 
-function toTimestamp(value: string | null) {
-  if (!value) {
-    return 0;
+function getBucketPromptHash(bucket: BucketRecord) {
+  return createHash("sha256").update(getBucketPrompt(bucket)).digest("hex");
+}
+
+function getBucketPromptHashes(buckets: BucketRecord[]) {
+  return new Map(buckets.map((bucket) => [bucket.id, getBucketPromptHash(bucket)]));
+}
+
+function getInboxStateCacheRow(ownerId: string) {
+  return prisma.inboxClassificationCache.findUnique({
+    where: {
+      ownerId_cacheKeyHash: {
+        cacheKeyHash: INBOX_STATE_CACHE_KEY_HASH,
+        ownerId,
+      },
+    },
+    select: {
+      payload: true,
+    },
+  });
+}
+
+async function loadInboxStatePayload(ownerId: string) {
+  const row = await getInboxStateCacheRow(ownerId);
+
+  return row ? parseInboxStatePayload(row.payload) : null;
+}
+
+async function saveInboxStatePayload(ownerId: string, payload: InboxStatePayload) {
+  await prisma.inboxClassificationCache.upsert({
+    where: {
+      ownerId_cacheKeyHash: {
+        cacheKeyHash: INBOX_STATE_CACHE_KEY_HASH,
+        ownerId,
+      },
+    },
+    create: {
+      cacheKey: INBOX_STATE_CACHE_KEY,
+      cacheKeyHash: INBOX_STATE_CACHE_KEY_HASH,
+      ownerId,
+      payload: payload as Prisma.InputJsonValue,
+    },
+    update: {
+      cacheKey: INBOX_STATE_CACHE_KEY,
+      payload: payload as Prisma.InputJsonValue,
+    },
+  });
+}
+
+function summarizeThreadForPreview(thread: EmailThreadSummary) {
+  return {
+    body: thread.body,
+    fingerprint: createHash("sha256")
+      .update(
+        JSON.stringify({
+          body: thread.body,
+          labelIds: [...thread.labelIds].sort(),
+          lastMessageAt: thread.lastMessageAt,
+          sender: thread.sender,
+          snippet: thread.snippet,
+          subject: thread.subject,
+        }),
+      )
+      .digest("hex"),
+    labelIds: [...thread.labelIds].sort(),
+    lastMessageAt: thread.lastMessageAt,
+    preview: normalizePreview(thread),
+    sender: thread.sender,
+    subject: thread.subject,
+    threadId: thread.id,
+  } satisfies CachedThreadSnapshot;
+}
+
+function toEmailThreadSummary(snapshot: CachedThreadSnapshot): EmailThreadSummary {
+  return {
+    body: snapshot.body,
+    id: snapshot.threadId,
+    labelIds: snapshot.labelIds,
+    lastMessageAt: snapshot.lastMessageAt,
+    sender: snapshot.sender,
+    snippet: snapshot.preview,
+    subject: snapshot.subject,
+  };
+}
+
+function countThreadIdDifferences(currentThreadIds: string[], cachedThreadIds: string[]) {
+  const cachedThreadIdSet = new Set(cachedThreadIds);
+  let differenceCount = 0;
+
+  for (let index = 0; index < currentThreadIds.length; index += 1) {
+    const threadId = currentThreadIds[index];
+
+    if (!cachedThreadIdSet.has(threadId) || cachedThreadIds[index] !== threadId) {
+      differenceCount += 1;
+    }
   }
 
-  const timestamp = new Date(value).getTime();
-
-  return Number.isNaN(timestamp) ? 0 : timestamp;
+  return differenceCount;
 }
 
 function getBucketSortKey(name: string) {
@@ -335,6 +414,19 @@ function sortBuckets(buckets: BucketRecord[]) {
     }
 
     return left.name.localeCompare(right.name);
+  });
+}
+
+function sortBucketNames(bucketNames: string[]) {
+  return [...bucketNames].sort((left, right) => {
+    const leftRank = getBucketSortKey(left);
+    const rightRank = getBucketSortKey(right);
+
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+
+    return left.localeCompare(right);
   });
 }
 
@@ -481,27 +573,23 @@ function classifyWithHeuristics(
   activeBucketNames: Set<string>,
 ): FinalClassification | null {
   const text = getThreadText(thread);
+  const bucketNames: string[] = [];
+  const rationaleParts: string[] = [];
 
   if (
     activeBucketNames.has("Newsletter") &&
     (signals.marketingSignals ||
       (signals.automatedSender && /list-|mailchimp|substack/i.test(thread.sender ?? "")))
   ) {
-    return {
-      bucketName: "Newsletter",
-      confidence: 0.97,
-      rationale: "Recurring promotional or editorial subscription signals were detected.",
-      source: "heuristic",
-    };
+    bucketNames.push("Newsletter");
+    rationaleParts.push(
+      "Recurring promotional or editorial subscription signals were detected.",
+    );
   }
 
   if (activeBucketNames.has("Finance") && signals.financeSignals) {
-    return {
-      bucketName: "Finance",
-      confidence: 0.94,
-      rationale: "The subject or preview contains strong money-related signals.",
-      source: "heuristic",
-    };
+    bucketNames.push("Finance");
+    rationaleParts.push("The subject or preview contains strong money-related signals.");
   }
 
   if (
@@ -511,12 +599,10 @@ function classifyWithHeuristics(
       AUTO_ARCHIVE_PATTERNS.some((pattern) => pattern.test(text)) ||
       (signals.automatedSender && thread.labelIds.includes("CATEGORY_UPDATES")))
   ) {
-    return {
-      bucketName: "Auto-archive",
-      confidence: 0.91,
-      rationale: "The thread looks like an automated update that usually does not need follow-up.",
-      source: "heuristic",
-    };
+    bucketNames.push("Auto-archive");
+    rationaleParts.push(
+      "The thread looks like an automated update that usually does not need follow-up.",
+    );
   }
 
   if (
@@ -524,12 +610,10 @@ function classifyWithHeuristics(
     signals.importantSignals &&
     !signals.marketingSignals
   ) {
-    return {
-      bucketName: "Important",
-      confidence: 0.88,
-      rationale: "The thread has urgency or priority signals that suggest prompt attention.",
-      source: "heuristic",
-    };
+    bucketNames.push("Important");
+    rationaleParts.push(
+      "The thread has urgency or priority signals that suggest prompt attention.",
+    );
   }
 
   if (
@@ -539,10 +623,17 @@ function classifyWithHeuristics(
     !signals.marketingSignals &&
     !signals.financeSignals
   ) {
+    bucketNames.push("Personal");
+    rationaleParts.push(
+      "The sender looks like a direct personal contact instead of a bulk sender.",
+    );
+  }
+
+  if (bucketNames.length) {
     return {
-      bucketName: "Personal",
-      confidence: 0.82,
-      rationale: "The sender looks like a direct personal contact instead of a bulk sender.",
+      bucketNames: sortBucketNames(bucketNames),
+      confidence: Math.min(0.99, Math.max(0.82, 0.76 + bucketNames.length * 0.06)),
+      rationale: rationaleParts.join(" "),
       source: "heuristic",
     };
   }
@@ -562,6 +653,7 @@ function parseClassificationBatch(value: string) {
   try {
     const parsed = JSON.parse(stripJsonCodeFence(value)) as {
       classifications?: Array<{
+        bucketNames?: unknown;
         bucketName?: unknown;
         confidence?: unknown;
         rationale?: unknown;
@@ -570,6 +662,23 @@ function parseClassificationBatch(value: string) {
     };
 
     return Array.isArray(parsed.classifications) ? parsed.classifications : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseBucketMembershipBatch(value: string) {
+  try {
+    const parsed = JSON.parse(stripJsonCodeFence(value)) as {
+      memberships?: Array<{
+        applies?: unknown;
+        confidence?: unknown;
+        rationale?: unknown;
+        threadId?: unknown;
+      }>;
+    };
+
+    return Array.isArray(parsed.memberships) ? parsed.memberships : [];
   } catch {
     return [];
   }
@@ -626,11 +735,13 @@ async function classifyWithLLM(
                 {
                   type: "input_text",
                   text: [
-                    "You classify Gmail inbox threads into exactly one bucket.",
+                    "You classify Gmail inbox threads into one or more buckets.",
                     "Use only the provided bucket names.",
-                    "If confidence is low, still choose the closest bucket and keep confidence low.",
-                    "Follow each bucket prompt closely when deciding which single bucket fits best.",
-                    'Return strict JSON with this shape: {"classifications":[{"threadId":"...","bucketName":"...","confidence":0.0,"rationale":"..."}]}',
+                    "A thread may belong in multiple buckets when multiple bucket prompts clearly apply.",
+                    "Return every applicable bucket for each thread as a non-empty list.",
+                    "If confidence is low, still include the closest applicable bucket names and keep confidence low.",
+                    "Follow each bucket prompt closely when deciding which buckets fit.",
+                    'Return strict JSON with this shape: {"classifications":[{"threadId":"...","bucketNames":["..."],"confidence":0.0,"rationale":"..."}]}',
                   ].join("\n"),
                 },
               ],
@@ -664,16 +775,27 @@ async function classifyWithLLM(
       }
 
       for (const entry of batchResult.value) {
+        const rawBucketNames = Array.isArray(entry.bucketNames)
+          ? entry.bucketNames
+          : typeof entry.bucketName === "string"
+            ? [entry.bucketName]
+            : [];
+        const bucketNames = sortBucketNames([...new Set(
+          rawBucketNames.filter(
+            (bucketName): bucketName is string =>
+              typeof bucketName === "string" && allowedBucketNames.has(bucketName),
+          ),
+        )]);
+
         if (
           typeof entry.threadId !== "string" ||
-          typeof entry.bucketName !== "string" ||
-          !allowedBucketNames.has(entry.bucketName)
+          !bucketNames.length
         ) {
           continue;
         }
 
         results.set(entry.threadId, {
-          bucketName: entry.bucketName,
+          bucketNames,
           confidence:
             typeof entry.confidence === "number"
               ? Math.max(0, Math.min(entry.confidence, 1))
@@ -688,6 +810,128 @@ async function classifyWithLLM(
     }
   } catch (error) {
     console.error("Inbox LLM classification failed", error);
+  }
+
+  return results;
+}
+
+async function classifyTargetBucketWithLLM(
+  threads: EmailThreadSummary[],
+  targetBucket: BucketRecord,
+  buckets: BucketRecord[],
+): Promise<Map<string, BucketMembershipClassification>> {
+  const results = new Map<string, BucketMembershipClassification>();
+
+  if (!threads.length || !openAIClient || !model) {
+    return results;
+  }
+
+  const chunkSize = getInboxClassificationBatchSize();
+  const threadChunks: EmailThreadSummary[][] = [];
+
+  for (let startIndex = 0; startIndex < threads.length; startIndex += chunkSize) {
+    threadChunks.push(threads.slice(startIndex, startIndex + chunkSize));
+  }
+
+  try {
+    const batchResults = await Promise.allSettled(
+      threadChunks.map(async (threadChunk) => {
+        const payload = threadChunk.map((thread) => {
+          const signals = detectSignals(thread);
+
+          return {
+            labels: thread.labelIds,
+            lastMessageAt: thread.lastMessageAt,
+            preview: thread.snippet,
+            sender: thread.sender,
+            senderDomain: signals.senderDomain,
+            signals: {
+              automatedSender: signals.automatedSender,
+              financeSignals: signals.financeSignals,
+              freeMailSender: signals.freeMailSender,
+              importantSignals: signals.importantSignals,
+              marketingSignals: signals.marketingSignals,
+            },
+            subject: thread.subject,
+            threadId: thread.id,
+          };
+        });
+
+        const response = await openAIClient.responses.create({
+          model,
+          input: [
+            {
+              role: "system",
+              content: [
+                {
+                  type: "input_text",
+                  text: [
+                    "You decide whether each Gmail inbox thread belongs in one target bucket.",
+                    "Threads may belong in multiple buckets overall, so judge the target bucket independently.",
+                    "Use the full bucket list only for context; return a decision for the target bucket only.",
+                    'Return strict JSON with this shape: {"memberships":[{"threadId":"...","applies":true,"confidence":0.0,"rationale":"..."}]}',
+                  ].join("\n"),
+                },
+              ],
+            },
+            {
+              role: "user",
+              content: [
+                {
+                  type: "input_text",
+                  text: JSON.stringify({
+                    buckets: buckets.map((bucket) => ({
+                      prompt: getBucketPrompt(bucket),
+                      name: bucket.name,
+                    })),
+                    targetBucket: {
+                      name: targetBucket.name,
+                      prompt: getBucketPrompt(targetBucket),
+                    },
+                    threads: payload,
+                  }),
+                },
+              ],
+            },
+          ],
+        });
+
+        return parseBucketMembershipBatch(response.output_text);
+      }),
+    );
+
+    for (const batchResult of batchResults) {
+      if (batchResult.status !== "fulfilled") {
+        console.error(
+          "Inbox targeted bucket classification batch failed",
+          batchResult.reason,
+        );
+        continue;
+      }
+
+      for (const entry of batchResult.value) {
+        if (typeof entry.threadId !== "string" || typeof entry.applies !== "boolean") {
+          continue;
+        }
+
+        results.set(entry.threadId, {
+          applies: entry.applies,
+          confidence:
+            typeof entry.confidence === "number"
+              ? Math.max(0, Math.min(entry.confidence, 1))
+              : 0.5,
+          rationale:
+            typeof entry.rationale === "string" && entry.rationale.trim().length
+              ? entry.rationale.trim()
+              : entry.applies
+                ? `The thread matches the ${targetBucket.name} bucket.`
+                : `The thread does not match the ${targetBucket.name} bucket.`,
+          source: "llm",
+        });
+      }
+    }
+  } catch (error) {
+    console.error("Inbox targeted bucket classification failed", error);
   }
 
   return results;
@@ -776,33 +1020,190 @@ function normalizePreview(thread: EmailThreadSummary) {
   );
 }
 
-function buildHomepageData(
-  buckets: BucketRecord[],
+function getFallbackBucketName(buckets: BucketRecord[]) {
+  return (
+    buckets.find((bucket) => bucket.name === "Can wait")?.name ??
+    buckets[0]?.name ??
+    "Can wait"
+  );
+}
+
+async function classifyThreadsAgainstBuckets(
   threads: EmailThreadSummary[],
-  classifications: Map<string, FinalClassification>,
-): Omit<InboxHomepageData, "configuredThreadLimit"> {
+  buckets: BucketRecord[],
+) {
+  const activeBucketNames = new Set(buckets.map((bucket) => bucket.name));
+  const classifications = new Map<string, FinalClassification>();
+  const heuristicClassifications = new Map<string, FinalClassification>();
+
+  for (const thread of threads) {
+    const heuristicClassification = classifyWithHeuristics(
+      thread,
+      detectSignals(thread),
+      activeBucketNames,
+    );
+
+    if (heuristicClassification) {
+      heuristicClassifications.set(thread.id, heuristicClassification);
+    }
+  }
+
+  const llmClassifications = await classifyWithLLM(threads, buckets);
+  const fallbackBucketName = getFallbackBucketName(buckets);
+
+  for (const thread of threads) {
+    const llmClassification = llmClassifications.get(thread.id);
+    const heuristicClassification = heuristicClassifications.get(thread.id);
+
+    if (llmClassification) {
+      const mergedBucketNames = sortBucketNames([
+        ...new Set([
+          ...llmClassification.bucketNames,
+          ...(heuristicClassification?.bucketNames ?? []),
+        ]),
+      ]);
+
+      classifications.set(thread.id, {
+        bucketNames: mergedBucketNames,
+        confidence: Math.max(
+          llmClassification.confidence,
+          heuristicClassification?.confidence ?? 0,
+        ),
+        rationale: heuristicClassification
+          ? `${heuristicClassification.rationale} ${llmClassification.rationale}`.trim()
+          : llmClassification.rationale,
+        source: heuristicClassification ? "heuristic" : llmClassification.source,
+      });
+      continue;
+    }
+
+    if (heuristicClassification) {
+      classifications.set(thread.id, heuristicClassification);
+      continue;
+    }
+
+    classifications.set(thread.id, {
+      bucketNames: [fallbackBucketName],
+      confidence: 0.3,
+      rationale:
+        "No strong signal was found, so the thread was placed in the default low-priority bucket.",
+      source: "fallback",
+    });
+  }
+
+  return classifications;
+}
+
+function setCachedBucketMembership(
+  payload: InboxStatePayload,
+  threadId: string,
+  bucketId: string,
+  membership: CachedBucketMembership,
+) {
+  if (!payload.bucketMembershipsByThreadId[threadId]) {
+    payload.bucketMembershipsByThreadId[threadId] = {};
+  }
+
+  payload.bucketMembershipsByThreadId[threadId][bucketId] = membership;
+}
+
+function applyFullClassificationsToPayload(input: {
+  buckets: BucketRecord[];
+  classifications: Map<string, FinalClassification>;
+  payload: InboxStatePayload;
+  threads: EmailThreadSummary[];
+}) {
+  const bucketPromptHashes = getBucketPromptHashes(input.buckets);
+
+  for (const thread of input.threads) {
+    const classification = input.classifications.get(thread.id);
+    const snapshot = input.payload.threadsById[thread.id];
+
+    if (!classification || !snapshot) {
+      continue;
+    }
+
+    const appliedBucketNames = new Set(classification.bucketNames);
+
+    for (const bucket of input.buckets) {
+      setCachedBucketMembership(input.payload, thread.id, bucket.id, {
+        applies: appliedBucketNames.has(bucket.name),
+        bucketPromptHash: bucketPromptHashes.get(bucket.id) ?? "",
+        confidence: appliedBucketNames.has(bucket.name)
+          ? classification.confidence
+          : Math.max(0.05, 1 - classification.confidence),
+        rationale: appliedBucketNames.has(bucket.name)
+          ? classification.rationale
+          : `${bucket.name} did not match as strongly as the selected buckets in the latest classification pass.`,
+        source: classification.source,
+        threadFingerprint: snapshot.fingerprint,
+      });
+    }
+  }
+}
+
+function getThreadSource(memberships: CachedBucketMembership[]) {
+  if (memberships.some((membership) => membership.source === "heuristic")) {
+    return "heuristic" as const;
+  }
+
+  if (memberships.some((membership) => membership.source === "llm")) {
+    return "llm" as const;
+  }
+
+  return "fallback" as const;
+}
+
+function buildHomepageDataFromState(
+  buckets: BucketRecord[],
+  payload: InboxStatePayload,
+): InboxHomepageData {
   const groupedThreads = new Map<string, InboxThreadItem[]>();
 
   for (const bucket of buckets) {
     groupedThreads.set(bucket.name, []);
   }
 
-  for (const thread of threads) {
-    const classification = classifications.get(thread.id);
+  for (const threadId of payload.threadIds) {
+    const snapshot = payload.threadsById[threadId];
 
-    if (!classification) {
+    if (!snapshot) {
       continue;
     }
 
-    groupedThreads.get(classification.bucketName)?.push({
-      bucketName: classification.bucketName,
-      lastMessageAt: thread.lastMessageAt,
-      preview: normalizePreview(thread),
-      sender: thread.sender,
-      source: classification.source,
-      subject: thread.subject,
-      threadId: thread.id,
-    });
+    const memberships = buckets
+      .map((bucket) => ({
+        bucket,
+        membership: payload.bucketMembershipsByThreadId[threadId]?.[bucket.id],
+      }))
+      .filter(
+        (entry): entry is {
+          bucket: BucketRecord;
+          membership: CachedBucketMembership;
+        } => Boolean(entry.membership?.applies),
+      );
+
+    const bucketNames = sortBucketNames(
+      memberships.map((entry) => entry.bucket.name),
+    );
+
+    if (!bucketNames.length) {
+      continue;
+    }
+
+    const source = getThreadSource(memberships.map((entry) => entry.membership));
+
+    for (const bucketName of bucketNames) {
+      groupedThreads.get(bucketName)?.push({
+        bucketNames,
+        lastMessageAt: snapshot.lastMessageAt,
+        preview: snapshot.preview,
+        sender: snapshot.sender,
+        source,
+        subject: snapshot.subject,
+        threadId: snapshot.threadId,
+      });
+    }
   }
 
   const bucketGroups = buckets.map((bucket) => {
@@ -828,16 +1229,168 @@ function buildHomepageData(
   return {
     bucketCount: bucketGroups.length,
     buckets: bucketGroups,
-    totalThreads: threads.length,
+    configuredThreadLimit: payload.configuredThreadLimit,
+    totalThreads: payload.threadIds.length,
   };
 }
 
-function getFallbackBucketName(buckets: BucketRecord[]) {
-  return (
-    buckets.find((bucket) => bucket.name === "Can wait")?.name ??
-    buckets[0]?.name ??
-    "Can wait"
+async function ensureBucketMembershipsAreCurrent(
+  payload: InboxStatePayload,
+  buckets: BucketRecord[],
+) {
+  const bucketPromptHashes = getBucketPromptHashes(buckets);
+  const staleThreadIdsByBucketId = new Map<string, string[]>();
+
+  for (const threadId of payload.threadIds) {
+    const snapshot = payload.threadsById[threadId];
+
+    if (!snapshot) {
+      continue;
+    }
+
+    for (const bucket of buckets) {
+      const membership = payload.bucketMembershipsByThreadId[threadId]?.[bucket.id];
+      const expectedPromptHash = bucketPromptHashes.get(bucket.id) ?? "";
+
+      if (
+        membership &&
+        membership.threadFingerprint === snapshot.fingerprint &&
+        membership.bucketPromptHash === expectedPromptHash
+      ) {
+        continue;
+      }
+
+      const staleThreadIds = staleThreadIdsByBucketId.get(bucket.id) ?? [];
+
+      staleThreadIds.push(threadId);
+      staleThreadIdsByBucketId.set(bucket.id, staleThreadIds);
+    }
+  }
+
+  if (!staleThreadIdsByBucketId.size) {
+    return false;
+  }
+
+  for (const bucket of buckets) {
+    const staleThreadIds = staleThreadIdsByBucketId.get(bucket.id);
+
+    if (!staleThreadIds?.length) {
+      continue;
+    }
+
+    const staleThreads = staleThreadIds
+      .map((threadId) => payload.threadsById[threadId])
+      .filter((thread): thread is CachedThreadSnapshot => Boolean(thread))
+      .map(toEmailThreadSummary);
+    const resolvedMemberships = new Map<string, BucketMembershipClassification>();
+    const threadsNeedingLLM: EmailThreadSummary[] = [];
+
+    for (const thread of staleThreads) {
+      const heuristicClassification = classifyWithHeuristics(
+        thread,
+        detectSignals(thread),
+        new Set([bucket.name]),
+      );
+
+      if (heuristicClassification?.bucketNames.includes(bucket.name)) {
+        resolvedMemberships.set(thread.id, {
+          applies: true,
+          confidence: heuristicClassification.confidence,
+          rationale: heuristicClassification.rationale,
+          source: heuristicClassification.source,
+        });
+        continue;
+      }
+
+      threadsNeedingLLM.push(thread);
+    }
+
+    const llmMemberships = await classifyTargetBucketWithLLM(
+      threadsNeedingLLM,
+      bucket,
+      buckets,
+    );
+
+    for (const thread of staleThreads) {
+      const snapshot = payload.threadsById[thread.id];
+      const membership =
+        resolvedMemberships.get(thread.id) ??
+        llmMemberships.get(thread.id) ?? {
+          applies: false,
+          confidence: 0.2,
+          rationale: `No strong evidence was found for the ${bucket.name} bucket.`,
+          source: "fallback" as const,
+        };
+
+      setCachedBucketMembership(payload, thread.id, bucket.id, {
+        applies: membership.applies,
+        bucketPromptHash: bucketPromptHashes.get(bucket.id) ?? "",
+        confidence: membership.confidence,
+        rationale: membership.rationale,
+        source: membership.source,
+        threadFingerprint: snapshot?.fingerprint ?? "",
+      });
+    }
+  }
+
+  return true;
+}
+
+async function synchronizeInboxStateFromGmail(input: {
+  accessToken: string;
+  buckets: BucketRecord[];
+  existingPayload: InboxStatePayload | null;
+  inboxThreadLimit: number;
+}) {
+  const threadIds = await listRecentInboxThreadIds(input.accessToken, {
+    maxResults: input.inboxThreadLimit,
+  });
+  const threads = await getEmailThreads(input.accessToken, threadIds);
+  const payload = createEmptyInboxStatePayload(input.inboxThreadLimit);
+  const threadsNeedingFullClassification: EmailThreadSummary[] = [];
+
+  payload.threadIds = threadIds;
+
+  for (const thread of threads) {
+    const snapshot = summarizeThreadForPreview(thread);
+    const existingSnapshot = input.existingPayload?.threadsById[thread.id];
+    const existingMemberships =
+      existingSnapshot?.fingerprint === snapshot.fingerprint
+        ? input.existingPayload?.bucketMembershipsByThreadId[thread.id] ?? {}
+        : {};
+
+    payload.threadsById[thread.id] = snapshot;
+    payload.bucketMembershipsByThreadId[thread.id] = { ...existingMemberships };
+
+    if (!existingSnapshot || existingSnapshot.fingerprint !== snapshot.fingerprint) {
+      threadsNeedingFullClassification.push(thread);
+    }
+  }
+
+  if (threadsNeedingFullClassification.length) {
+    const classifications = await classifyThreadsAgainstBuckets(
+      threadsNeedingFullClassification,
+      input.buckets,
+    );
+
+    applyFullClassificationsToPayload({
+      buckets: input.buckets,
+      classifications,
+      payload,
+      threads: threadsNeedingFullClassification,
+    });
+  }
+
+  const hadMembershipUpdates = await ensureBucketMembershipsAreCurrent(
+    payload,
+    input.buckets,
   );
+
+  return {
+    payload,
+    reclassified:
+      hadMembershipUpdates || threadsNeedingFullClassification.length > 0,
+  };
 }
 
 export async function createCustomBucket(input: {
@@ -1066,13 +1619,9 @@ export async function hasInboxClassificationCache(ownerEmail: string) {
     return false;
   }
 
-  const cacheCount = await prisma.inboxClassificationCache.count({
-    where: {
-      ownerId: owner.id,
-    },
-  });
+  const payload = await loadInboxStatePayload(owner.id);
 
-  return cacheCount > 0;
+  return Boolean(payload?.threadIds.length);
 }
 
 export async function getInboxRefreshStatus(input: {
@@ -1086,20 +1635,7 @@ export async function getInboxRefreshStatus(input: {
     image: input.ownerImage,
     name: input.ownerName,
   });
-  const latestCache = await prisma.inboxClassificationCache.findFirst({
-    where: {
-      ownerId: owner.id,
-    },
-    orderBy: {
-      updatedAt: "desc",
-    },
-    select: {
-      payload: true,
-    },
-  });
-  const parsedPayload = latestCache
-    ? parseCachedInboxHomepageData(latestCache.payload)
-    : null;
+  const parsedPayload = await loadInboxStatePayload(owner.id);
 
   if (!parsedPayload) {
     return {
@@ -1109,27 +1645,14 @@ export async function getInboxRefreshStatus(input: {
     };
   }
 
-  const sortedThreadMap = new Map(
-    flattenInboxThreads(parsedPayload).map((thread) => [thread.threadId, thread.lastMessageAt]),
-  );
   const inboxThreadLimit = await getWorkspaceInboxThreadLimit(input.ownerEmail);
-  const latestThreads = await listRecentInboxThreads(input.accessToken, {
+  const latestThreadIds = await listRecentInboxThreadIds(input.accessToken, {
     maxResults: inboxThreadLimit,
   });
-  let unsortedThreadCount = 0;
-
-  for (const thread of latestThreads) {
-    const sortedLastMessageAt = sortedThreadMap.get(thread.id);
-
-    if (!sortedLastMessageAt) {
-      unsortedThreadCount += 1;
-      continue;
-    }
-
-    if (toTimestamp(thread.lastMessageAt) > toTimestamp(sortedLastMessageAt)) {
-      unsortedThreadCount += 1;
-    }
-  }
+  const unsortedThreadCount =
+    parsedPayload.configuredThreadLimit !== inboxThreadLimit
+      ? latestThreadIds.length
+      : countThreadIdDifferences(latestThreadIds, parsedPayload.threadIds);
 
   return {
     checkedAt: new Date().toISOString(),
@@ -1143,6 +1666,7 @@ export async function loadInboxHomepage(input: {
   ownerEmail: string;
   ownerImage?: string | null;
   ownerName?: string | null;
+  refresh?: boolean;
 }): Promise<InboxLoadResult> {
   const owner = await upsertAppUser({
     email: input.ownerEmail,
@@ -1150,116 +1674,48 @@ export async function loadInboxHomepage(input: {
     name: input.ownerName,
   });
   const buckets = await ensureOwnerBuckets(owner.id);
-  const defaultInboxThreadLimit = getDefaultInboxThreadLimit();
   const inboxThreadLimit = await getWorkspaceInboxThreadLimit(input.ownerEmail);
-  const gmailFetchStartedAt = performance.now();
-  const threads = await listRecentInboxThreads(input.accessToken, {
-    maxResults: inboxThreadLimit,
-  });
-  const gmailFetchMs = Math.round(performance.now() - gmailFetchStartedAt);
   const sortingStartedAt = performance.now();
-  const cacheKey = buildInboxCacheKey({
-    buckets,
-    defaultInboxThreadLimit,
-    inboxThreadLimit,
-    threads,
-  });
-  const cacheKeyHash = getInboxCacheKeyHash(cacheKey);
-  const cachedResult = await prisma.inboxClassificationCache.findUnique({
-    where: {
-      ownerId_cacheKeyHash: {
-        cacheKeyHash,
-        ownerId: owner.id,
-      },
-    },
-    select: {
-      cacheKey: true,
-      payload: true,
-    },
-  });
+  const cachedPayload = await loadInboxStatePayload(owner.id);
 
-  if (cachedResult?.cacheKey === cacheKey) {
-    const parsedPayload = parseCachedInboxHomepageData(cachedResult.payload);
-
-    if (parsedPayload) {
-      return {
-        cacheHit: true,
-        inbox: parsedPayload,
-        timings: {
-          gmailFetchMs,
-          sortingMs: Math.round(performance.now() - sortingStartedAt),
-        },
-      };
-    }
-  }
-
-  const activeBucketNames = new Set(buckets.map((bucket) => bucket.name));
-  const classifications = new Map<string, FinalClassification>();
-  const threadsNeedingLLM: EmailThreadSummary[] = [];
-
-  for (const thread of threads) {
-    const heuristicClassification = classifyWithHeuristics(
-      thread,
-      detectSignals(thread),
-      activeBucketNames,
+  if (
+    cachedPayload &&
+    !input.refresh &&
+    cachedPayload.configuredThreadLimit === inboxThreadLimit
+  ) {
+    const hadMembershipUpdates = await ensureBucketMembershipsAreCurrent(
+      cachedPayload,
+      buckets,
     );
 
-    if (heuristicClassification) {
-      classifications.set(thread.id, heuristicClassification);
-      continue;
+    if (hadMembershipUpdates) {
+      await saveInboxStatePayload(owner.id, cachedPayload);
     }
 
-    threadsNeedingLLM.push(thread);
-  }
-
-  const llmClassifications = await classifyWithLLM(threadsNeedingLLM, buckets);
-  const fallbackBucketName = getFallbackBucketName(buckets);
-
-  for (const thread of threadsNeedingLLM) {
-    const llmClassification = llmClassifications.get(thread.id);
-
-    if (llmClassification && llmClassification.confidence >= 0.45) {
-      classifications.set(thread.id, llmClassification);
-      continue;
-    }
-
-    classifications.set(thread.id, {
-      bucketName: fallbackBucketName,
-      confidence: llmClassification?.confidence ?? 0.3,
-      rationale:
-        llmClassification?.rationale ??
-        "No strong signal was found, so the thread was placed in the default low-priority bucket.",
-      source: "fallback",
-    });
-  }
-
-  const payload = {
-    ...buildHomepageData(buckets, threads, classifications),
-    configuredThreadLimit: inboxThreadLimit,
-  } satisfies InboxHomepageData;
-
-  await prisma.inboxClassificationCache.upsert({
-    where: {
-      ownerId_cacheKeyHash: {
-        cacheKeyHash,
-        ownerId: owner.id,
+    return {
+      cacheHit: !hadMembershipUpdates,
+      inbox: buildHomepageDataFromState(buckets, cachedPayload),
+      timings: {
+        gmailFetchMs: 0,
+        sortingMs: Math.round(performance.now() - sortingStartedAt),
       },
-    },
-    create: {
-      cacheKey,
-      cacheKeyHash,
-      ownerId: owner.id,
-      payload: payload as Prisma.InputJsonValue,
-    },
-    update: {
-      cacheKey,
-      payload: payload as Prisma.InputJsonValue,
-    },
+    };
+  }
+
+  const gmailFetchStartedAt = performance.now();
+  const synchronized = await synchronizeInboxStateFromGmail({
+    accessToken: input.accessToken,
+    buckets,
+    existingPayload: cachedPayload,
+    inboxThreadLimit,
   });
+  const gmailFetchMs = Math.round(performance.now() - gmailFetchStartedAt);
+
+  await saveInboxStatePayload(owner.id, synchronized.payload);
 
   return {
-    cacheHit: false,
-    inbox: payload,
+    cacheHit: !synchronized.reclassified,
+    inbox: buildHomepageDataFromState(buckets, synchronized.payload),
     timings: {
       gmailFetchMs,
       sortingMs: Math.round(performance.now() - sortingStartedAt),

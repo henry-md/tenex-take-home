@@ -367,8 +367,9 @@ export function BucketSettings({
           </h2>
           <p className="mt-2 text-sm leading-6 text-slate-600">
             Each bucket has an editable prompt that is passed into the inbox
-            classifier. Keep prompts short and specific so the model can make a
-            clean one-bucket decision.
+            classifier. Keep prompts short and specific so the model can decide
+            clearly when the bucket applies, even if a thread also belongs in
+            other buckets.
           </p>
         </div>
 

@@ -47,5 +47,6 @@ The app is a Next.js App Router project with three active layers:
 - `agent-docs/system.md`
 - `agent-docs/architecture/google-workspace-tools.md`
 - `agent-docs/architecture/inbox-bucketing.md`
+- `agent-docs/architecture/inbox-cache.md`
 - `agent-docs/architecture/tool-calling.md`
 - `agent-docs/architecture/chat-email-rendering.md`

@@ -6,7 +6,7 @@ Inbox Concierge helps a user connect a Google Workspace (G-Suite) account, read 
 ## Core User Flow
 1. On first visit, prompt the user to authenticate with Google using OAuth and request Gmail read access sufficient to list threads and message snippets.
 2. After authentication, fetch the user's configured recent Gmail thread count. New users default to `DEFAULT_INBOX_THREAD_LIMIT`.
-3. Run that thread set through an LLM-powered classification pipeline that assigns each thread to exactly one bucket.
+3. Run that thread set through an LLM-powered classification pipeline that assigns each thread to one or more buckets.
 4. Render a homepage-style inbox view grouped by bucket. Each listed item only needs:
    - Subject line
    - Short preview/snippet
@@ -37,8 +37,8 @@ Recommended pipeline:
    - Low-priority bulk mail
    - Previously seen sender patterns
 3. Send only the minimal structured payload needed into the LLM classifier.
-4. Ask the model to choose exactly one bucket from the active bucket list and return:
-   - Selected bucket
+4. Ask the model to choose one or more buckets from the active bucket list and return:
+   - Selected buckets
    - Short rationale
    - Confidence score
 5. Use a fallback or review rule for low-confidence classifications. For example, low-confidence items can default to `Can wait` unless a better product rule is introduced.
@@ -51,7 +51,7 @@ Requirements for custom buckets:
 - A custom bucket needs at least a user-provided name.
 - After a new custom bucket is created, the system should recategorize all currently loaded threads using the updated full bucket list.
 - Reclassification should treat custom buckets as first-class options, not post-processing filters layered on top of the defaults.
-- If two buckets are semantically similar, the classifier should still choose exactly one final bucket.
+- If multiple buckets genuinely apply, the classifier should return all of them rather than force a single winner.
 
 ## UI Expectations
 The main screen should look and feel similar to an email application's inbox landing page:

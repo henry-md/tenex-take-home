@@ -13,6 +13,46 @@ export class GoogleApiError extends Error {
   }
 }
 
+function isGoogleApiErrorPayload(
+  value: unknown,
+): value is {
+  error?: {
+    errors?: Array<{
+      reason?: string;
+    }>;
+  };
+} {
+  return typeof value === "object" && value !== null;
+}
+
+export function getGoogleApiErrorReason(error: GoogleApiError) {
+  if (!isGoogleApiErrorPayload(error.details)) {
+    return undefined;
+  }
+
+  return error.details.error?.errors?.find(
+    (entry) => typeof entry.reason === "string",
+  )?.reason;
+}
+
+export function getGoogleApiRetryAt(error: GoogleApiError) {
+  const matchedRetryAt = error.message.match(
+    /\bRetry after (\d{4}-\d{2}-\d{2}T[^ )]+)\b/i,
+  )?.[1];
+
+  return matchedRetryAt ?? undefined;
+}
+
+export function serializeGoogleApiError(error: GoogleApiError) {
+  return {
+    details: error.details,
+    error: error.message,
+    reason: getGoogleApiErrorReason(error),
+    retryAt: getGoogleApiRetryAt(error),
+    status: error.status,
+  };
+}
+
 type GoogleApiRequestOptions = Omit<RequestInit, "body"> & {
   body?: BodyInit | null;
   query?: Record<string, boolean | number | string | undefined>;

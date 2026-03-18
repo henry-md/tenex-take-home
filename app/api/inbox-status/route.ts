@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import { getServerSession, type Session } from "next-auth";
 
 import { authOptions } from "@/auth";
+import {
+  GoogleApiError,
+  serializeGoogleApiError,
+} from "@/lib/google-workspace/google-api";
 import { getInboxRefreshStatus } from "@/lib/inbox/classification";
 
 function getInboxOwner(session: Session | null) {
@@ -49,6 +53,12 @@ export async function GET() {
       error,
       ownerEmail: owner.email,
     });
+
+    if (error instanceof GoogleApiError) {
+      return NextResponse.json(serializeGoogleApiError(error), {
+        status: error.status,
+      });
+    }
 
     return NextResponse.json(
       {
