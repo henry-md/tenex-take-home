@@ -14,6 +14,10 @@ import {
 } from "@/lib/google-workspace/gmail";
 import { getWorkspaceInboxThreadLimit } from "@/lib/google-workspace/inbox-thread-limit";
 import { prisma } from "@/lib/prisma";
+import {
+  type InboxSyncChangeSummary,
+  summarizeInboxSyncChanges,
+} from "@/lib/inbox/sync-change-summary";
 import { upsertAppUser } from "@/lib/users";
 
 const DEFAULT_BUCKETS = [
@@ -188,17 +192,17 @@ export type InboxLoadTimings = {
 };
 
 export type InboxLoadResult = {
+  changeSummary: InboxSyncChangeSummary;
   emailCacheHit: boolean;
   inbox: InboxHomepageData;
-  newThreadCount: number;
   sortingCacheHit: boolean;
   timings: InboxLoadTimings;
 };
 
 export type InboxRefreshStatus = {
+  changedThreadCount: number;
   checkedAt: string;
   hasUpdates: boolean;
-  unsortedThreadCount: number;
 };
 
 type CachedThreadSnapshot = {
@@ -408,21 +412,6 @@ function toEmailThreadSummary(snapshot: CachedThreadSnapshot): EmailThreadSummar
     snippet: snapshot.preview,
     subject: snapshot.subject,
   };
-}
-
-function countNewThreadIds(currentThreadIds: string[], cachedThreadIds: string[]) {
-  const cachedThreadIdSet = new Set(cachedThreadIds);
-  let newThreadCount = 0;
-
-  for (let index = 0; index < currentThreadIds.length; index += 1) {
-    const threadId = currentThreadIds[index];
-
-    if (!cachedThreadIdSet.has(threadId)) {
-      newThreadCount += 1;
-    }
-  }
-
-  return newThreadCount;
 }
 
 function getBucketSortKey(name: string) {
@@ -1413,10 +1402,21 @@ async function synchronizeInboxStateFromGmail(input: {
   const threads = await getEmailThreads(input.accessToken, threadIds);
   const payload = createEmptyInboxStatePayload(input.inboxThreadLimit);
   const threadsNeedingFullClassification: EmailThreadSummary[] = [];
-  const newThreadCount = countNewThreadIds(
-    threadIds,
-    input.existingPayload?.threadIds ?? [],
+  const currentThreadTimestamps = new Map(
+    threads.map((thread) => [thread.id, thread.lastMessageAt] as const),
   );
+  const cachedThreadTimestamps = new Map(
+    Object.values(input.existingPayload?.threadsById ?? {}).map((thread) => [
+      thread.threadId,
+      thread.lastMessageAt,
+    ]),
+  );
+  const changeSummary = summarizeInboxSyncChanges({
+    cachedThreadIds: input.existingPayload?.threadIds ?? [],
+    cachedThreadTimestamps,
+    currentThreadIds: threadIds,
+    currentThreadTimestamps,
+  });
 
   payload.threadIds = threadIds;
 
@@ -1456,7 +1456,7 @@ async function synchronizeInboxStateFromGmail(input: {
   );
 
   return {
-    newThreadCount,
+    changeSummary,
     payload,
     reclassified:
       hadMembershipUpdates || threadsNeedingFullClassification.length > 0,
@@ -1784,24 +1784,24 @@ export async function getInboxRefreshStatus(input: {
 
   if (!parsedPayload) {
     return {
+      changedThreadCount: 0,
       checkedAt: new Date().toISOString(),
       hasUpdates: false,
-      unsortedThreadCount: 0,
     };
   }
 
   const latestThreadIds = await listRecentInboxThreadIds(input.accessToken, {
     maxResults: inboxThreadLimit,
   });
-  const unsortedThreadCount = countNewThreadIds(
-    latestThreadIds,
-    parsedPayload.threadIds,
-  );
+  const changeSummary = summarizeInboxSyncChanges({
+    cachedThreadIds: parsedPayload.threadIds,
+    currentThreadIds: latestThreadIds,
+  });
 
   return {
+    changedThreadCount: changeSummary.changedThreadCount,
     checkedAt: new Date().toISOString(),
-    hasUpdates: unsortedThreadCount > 0,
-    unsortedThreadCount,
+    hasUpdates: changeSummary.changedThreadCount > 0,
   };
 }
 
@@ -1834,9 +1834,14 @@ export async function loadInboxHomepage(input: {
     }
 
     return {
+      changeSummary: {
+        addedThreadCount: 0,
+        changedThreadCount: 0,
+        kind: "none",
+        removedThreadCount: 0,
+      },
       emailCacheHit: true,
       inbox: buildHomepageDataFromState(buckets, cachedPayload),
-      newThreadCount: 0,
       sortingCacheHit: !hadMembershipUpdates,
       timings: {
         gmailFetchMs: 0,
@@ -1857,9 +1862,9 @@ export async function loadInboxHomepage(input: {
   await saveInboxStatePayload(owner.id, synchronized.payload);
 
   return {
+    changeSummary: synchronized.changeSummary,
     emailCacheHit: false,
     inbox: buildHomepageDataFromState(buckets, synchronized.payload),
-    newThreadCount: synchronized.newThreadCount,
     sortingCacheHit: !synchronized.reclassified,
     timings: {
       gmailFetchMs,

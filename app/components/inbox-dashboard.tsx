@@ -76,6 +76,8 @@ const BUCKET_TONES: Record<string, BucketTone> = {
 const INBOX_LOAD_TOAST_DURATION_MS = 120_000;
 const INBOX_STATUS_POLL_INTERVAL_MS = 60_000;
 const PENDING_SORT_REASON_MAX_AGE_MS = 10 * 60 * 1000;
+const SYNC_STATUS_TOASTER_ID = "status";
+const SYNC_STATUS_TOAST_ID = "inbox-sync-status";
 
 type PersistedPendingSortReason = {
   bucketName: string;
@@ -152,10 +154,13 @@ function ThreadRow({ thread }: { thread: InboxThreadItem }) {
 
 type InboxHomepageResponse = {
   gmailFetch: {
+    addedThreadCount: number;
     cacheHit: boolean;
+    changedThreadCount: number;
     durationMs: number;
     fetchedThreadCount: number;
-    newThreadCount: number;
+    kind: "deleted-threads" | "mixed" | "new-threads" | "none";
+    removedThreadCount: number;
   };
   inbox: InboxHomepageData;
   sorting: {
@@ -166,9 +171,9 @@ type InboxHomepageResponse = {
 };
 
 type InboxRefreshStatusResponse = {
+  changedThreadCount: number;
   checkedAt: string;
   hasUpdates: boolean;
-  unsortedThreadCount: number;
 };
 
 type BackgroundSyncState = "idle" | "checking" | "refreshing";
@@ -178,8 +183,8 @@ type ActiveSyncIndicator =
       kind: "new-bucket";
     }
   | {
-      emailCount: number;
-      kind: "new-email";
+      changeCount: number;
+      kind: "inbox-change";
     };
 
 function readPendingSortReason() {
@@ -227,11 +232,34 @@ function truncateBucketName(name: string, maxLength: number) {
 }
 
 function getActiveSyncLabel(indicator: ActiveSyncIndicator) {
-  if (indicator.kind === "new-email") {
-    return `Syncing ${indicator.emailCount} new email${indicator.emailCount === 1 ? "" : "s"}`;
+  if (indicator.kind === "inbox-change") {
+    return `Syncing ${indicator.changeCount} inbox change${indicator.changeCount === 1 ? "" : "s"}`;
   }
 
   return `Filling new bucket: ${truncateBucketName(indicator.bucketName, 15)}`;
+}
+
+function renderSyncToast(indicator: ActiveSyncIndicator) {
+  const label = getActiveSyncLabel(indicator);
+  const isSyncingInboxChange = indicator.kind === "inbox-change";
+
+  return (
+    <div className="w-[min(24rem,calc(100vw-2rem))] rounded-[1.2rem] border border-slate-200 bg-white/95 px-4 py-3 shadow-[0_16px_40px_rgba(15,23,42,0.08)] backdrop-blur">
+      <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+        <LoaderCircle
+          aria-hidden="true"
+          className="h-4 w-4 animate-spin text-slate-500"
+          strokeWidth={2}
+        />
+        <span className="min-w-0 truncate">{label}</span>
+      </div>
+      {isSyncingInboxChange ? (
+        <div className="mt-2 h-1 overflow-hidden rounded-full bg-slate-100">
+          <div className="h-full w-2/5 animate-pulse rounded-full bg-slate-300" />
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function showInboxLoadToasts(payload: InboxHomepageResponse) {
@@ -298,6 +326,7 @@ export function InboxDashboard({
   const hydratedFromStorageRef = useRef(false);
   const loadedCachedSnapshotRef = useRef(false);
   const latestLoadRequestIdRef = useRef(0);
+  const syncToastVisibleRef = useRef(false);
   const [inbox, setInbox] = useState<InboxHomepageData | null>(null);
   const [backgroundSyncState, setBackgroundSyncState] =
     useState<BackgroundSyncState>("idle");
@@ -399,8 +428,8 @@ export function InboxDashboard({
 
       setBackgroundSyncState("refreshing");
       setActiveSyncIndicator({
-        emailCount: status.unsortedThreadCount,
-        kind: "new-email",
+        changeCount: status.changedThreadCount,
+        kind: "inbox-change",
       });
       await loadInbox({
         refresh: true,
@@ -453,9 +482,27 @@ export function InboxDashboard({
     }
 
     return () => {
+      toast.dismiss(SYNC_STATUS_TOAST_ID);
       isMountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!activeSyncIndicator) {
+      if (syncToastVisibleRef.current) {
+        toast.dismiss(SYNC_STATUS_TOAST_ID);
+        syncToastVisibleRef.current = false;
+      }
+      return;
+    }
+
+    syncToastVisibleRef.current = true;
+    toast.custom(() => renderSyncToast(activeSyncIndicator), {
+      id: SYNC_STATUS_TOAST_ID,
+      toasterId: SYNC_STATUS_TOASTER_ID,
+      dismissible: false,
+    });
+  }, [activeSyncIndicator]);
 
   useEffect(() => {
     // Prevent the development Strict Mode effect replay from issuing a second
@@ -524,33 +571,9 @@ export function InboxDashboard({
     inbox?.buckets.find((bucket) => bucket.name === "Important")?.count ?? 0;
   const configuredThreadLimit =
     inbox?.configuredThreadLimit ?? initialInboxThreadLimit;
-  const activeSyncLabel = activeSyncIndicator
-    ? getActiveSyncLabel(activeSyncIndicator)
-    : null;
-  const isSyncingNewEmail = activeSyncIndicator?.kind === "new-email";
 
   return (
     <section className="space-y-6">
-      {activeSyncLabel ? (
-        <div className="sticky top-4 z-20 flex justify-end">
-          <div className="w-full max-w-sm rounded-[1.2rem] border border-slate-200 bg-white/95 px-4 py-3 shadow-[0_16px_40px_rgba(15,23,42,0.08)] backdrop-blur">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-              <LoaderCircle
-                aria-hidden="true"
-                className="h-4 w-4 animate-spin text-slate-500"
-                strokeWidth={2}
-              />
-              <span className="min-w-0 truncate">{activeSyncLabel}</span>
-            </div>
-            {isSyncingNewEmail ? (
-              <div className="mt-2 h-1 overflow-hidden rounded-full bg-slate-100">
-                <div className="h-full w-2/5 animate-pulse rounded-full bg-slate-300" />
-              </div>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-
       {isHeroVisible ? (
         <header className="overflow-hidden rounded-[2rem] border border-white/70 bg-[linear-gradient(135deg,rgba(255,250,240,0.96),rgba(255,255,255,0.92)_45%,rgba(240,249,255,0.9))] p-6 shadow-[0_30px_90px_rgba(15,23,42,0.08)] backdrop-blur md:p-8">
           <div className="flex items-start justify-between gap-4">

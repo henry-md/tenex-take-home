@@ -7,10 +7,13 @@ describe("getInboxLoadToastMessages", () => {
     expect(
       getInboxLoadToastMessages({
         gmailFetch: {
+          addedThreadCount: 0,
           cacheHit: true,
+          changedThreadCount: 0,
           durationMs: 0,
           fetchedThreadCount: 100,
-          newThreadCount: 0,
+          kind: "none",
+          removedThreadCount: 0,
         },
         sorting: {
           cacheHit: true,
@@ -28,10 +31,13 @@ describe("getInboxLoadToastMessages", () => {
     expect(
       getInboxLoadToastMessages({
         gmailFetch: {
+          addedThreadCount: 100,
           cacheHit: false,
+          changedThreadCount: 100,
           durationMs: 18_000,
           fetchedThreadCount: 100,
-          newThreadCount: 100,
+          kind: "new-threads",
+          removedThreadCount: 0,
         },
         sorting: {
           cacheHit: true,
@@ -49,10 +55,13 @@ describe("getInboxLoadToastMessages", () => {
     expect(
       getInboxLoadToastMessages({
         gmailFetch: {
+          addedThreadCount: 0,
           cacheHit: true,
+          changedThreadCount: 0,
           durationMs: 0,
           fetchedThreadCount: 100,
-          newThreadCount: 0,
+          kind: "none",
+          removedThreadCount: 0,
         },
         sorting: {
           cacheHit: false,
@@ -70,10 +79,13 @@ describe("getInboxLoadToastMessages", () => {
     expect(
       getInboxLoadToastMessages({
         gmailFetch: {
+          addedThreadCount: 1,
           cacheHit: false,
+          changedThreadCount: 1,
           durationMs: 4_200,
           fetchedThreadCount: 100,
-          newThreadCount: 1,
+          kind: "new-threads",
+          removedThreadCount: 1,
         },
         sorting: {
           cacheHit: false,
@@ -84,6 +96,54 @@ describe("getInboxLoadToastMessages", () => {
     ).toEqual([
       "Synced 1 new Gmail thread in 4.2s.",
       "Inbox sorting finished in 8.2s.",
+    ]);
+  });
+
+  it("reports deletion-driven refreshes without calling them new mail", () => {
+    expect(
+      getInboxLoadToastMessages({
+        gmailFetch: {
+          addedThreadCount: 9,
+          cacheHit: false,
+          changedThreadCount: 9,
+          durationMs: 12_000,
+          fetchedThreadCount: 100,
+          kind: "deleted-threads",
+          removedThreadCount: 9,
+        },
+        sorting: {
+          cacheHit: false,
+          durationMs: 16_000,
+          sortedEmailCount: 100,
+        },
+      }),
+    ).toEqual([
+      "Synced 9 Gmail deletions and refreshed the latest 100 threads in 12s.",
+      "Inbox sorting finished in 16s.",
+    ]);
+  });
+
+  it("reports mixed inbox changes generically", () => {
+    expect(
+      getInboxLoadToastMessages({
+        gmailFetch: {
+          addedThreadCount: 3,
+          cacheHit: false,
+          changedThreadCount: 5,
+          durationMs: 2_450,
+          fetchedThreadCount: 100,
+          kind: "mixed",
+          removedThreadCount: 5,
+        },
+        sorting: {
+          cacheHit: false,
+          durationMs: 3_100,
+          sortedEmailCount: 100,
+        },
+      }),
+    ).toEqual([
+      "Synced 5 Gmail thread changes in 2.5s.",
+      "Inbox sorting finished in 3.1s.",
     ]);
   });
 });
