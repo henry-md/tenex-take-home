@@ -35,7 +35,13 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/app/components/ui/alert-dialog";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/app/components/ui/resizable";
 import { type ApprovalModeOption } from "@/lib/google-workspace/approval-mode-options";
+import { cn } from "@/lib/utils";
 
 type ChatMessage = {
   content: string;
@@ -264,6 +270,14 @@ function hasRenderedEmailBody(email: EmailResult) {
   );
 }
 
+function truncateSubject(value: string, maxLength: number) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
 function EmailBodyContent({ email }: { email: EmailResult }) {
   if (email.bodyHtml?.trim()) {
     return (
@@ -327,12 +341,52 @@ function EmailBodyContent({ email }: { email: EmailResult }) {
   );
 }
 
-function EmailResultCard({ email }: { email: EmailResult }) {
+function EmailResultCard({
+  email,
+  variant = "default",
+}: {
+  email: EmailResult;
+  variant?: "compact" | "default";
+}) {
   const showsBody = hasRenderedEmailBody(email);
+  const isCompact = variant === "compact";
+
+  if (isCompact) {
+    return (
+      <div className="overflow-hidden rounded-[1rem] border border-slate-200 bg-white px-3 py-2.5 shadow-[0_10px_26px_rgba(15,23,42,0.06)]">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="break-words text-[13px] font-semibold leading-5 text-slate-900">
+              {truncateSubject(email.subject, 100)}
+            </p>
+            <p className="mt-0.5 truncate text-[12px] text-slate-500">
+              {email.sender ?? "Unknown sender"}
+            </p>
+            <p className="mt-0.5 truncate text-[13px] text-slate-500">
+              {email.snippet || "No message preview available."}
+            </p>
+          </div>
+          <p className="shrink-0 text-[11px] text-slate-500">
+            {formatEmailTimestamp(email.lastMessageAt)}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <details className="group overflow-hidden rounded-[1.35rem] border border-slate-300/90 bg-white shadow-[0_18px_44px_rgba(15,23,42,0.08)]">
-      <summary className="cursor-pointer list-none bg-[linear-gradient(180deg,rgba(248,250,252,0.96),rgba(255,255,255,0.98))] px-4 py-3.5 transition hover:bg-slate-50 [&::-webkit-details-marker]:hidden">
+    <details
+      className={cn(
+        "group overflow-hidden border bg-white",
+        "rounded-[1.35rem] border-slate-300/90 shadow-[0_18px_44px_rgba(15,23,42,0.08)]",
+      )}
+    >
+      <summary
+        className={cn(
+          "cursor-pointer list-none transition hover:bg-slate-50 [&::-webkit-details-marker]:hidden",
+          "bg-[linear-gradient(180deg,rgba(248,250,252,0.96),rgba(255,255,255,0.98))] px-4 py-3.5",
+        )}
+      >
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-start gap-2">
             <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500">
@@ -362,7 +416,12 @@ function EmailResultCard({ email }: { email: EmailResult }) {
           </p>
         </div>
       </summary>
-      <div className="border-t border-slate-200 bg-[linear-gradient(180deg,rgba(248,250,252,0.85),rgba(241,245,249,0.55))] p-4">
+      <div
+        className={cn(
+          "border-t border-slate-200 bg-[linear-gradient(180deg,rgba(248,250,252,0.85),rgba(241,245,249,0.55))]",
+          "p-4",
+        )}
+      >
         <div className="overflow-hidden rounded-[1.1rem] border border-slate-200 bg-white">
           <div className="border-b border-slate-200 px-4 py-3">
             <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
@@ -645,6 +704,192 @@ export function OpenAIChat({
   const hasPersistedMessages = messages.length > 1;
   const needsQueueAttention = drafts.length > 0;
   const showsApprovalQueue = !isLoadingDrafts && needsQueueAttention;
+  const conversationPane = (
+    <div className="h-full bg-slate-50">
+      <div
+        className={`h-full overflow-y-auto ${
+          isExpanded ? expandedGutterClass : "p-4"
+        }`}
+      >
+        <div className={`space-y-4 ${isExpanded ? "space-y-5" : ""}`}>
+        {messages.map((message) => (
+          <div
+            key={message.id}
+            className={`flex ${
+              message.role === "user" ? "justify-end" : "justify-start"
+            }`}
+          >
+            <article
+              className={`rounded-3xl shadow-sm ${
+                isExpanded
+                  ? "max-w-[48rem] px-5 py-4 text-sm leading-7"
+                  : "max-w-[92%] px-4 py-3 text-sm leading-6"
+              } ${
+                message.role === "user"
+                  ? "bg-slate-950 text-white"
+                  : "bg-white text-slate-700"
+              }`}
+            >
+              {message.role === "assistant" ? (
+                <AssistantMessageContent content={message.content} />
+              ) : (
+                <p className="whitespace-pre-wrap break-words">{message.content}</p>
+              )}
+              {getMessageEmailResults(message).length ? (
+                <div className="mt-4 rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)]">
+                  <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    {getMessageEmailResults(message).length === 1
+                      ? "Email result"
+                      : "Email results"}
+                  </p>
+                  <div className="space-y-3">
+                    {getMessageEmailResults(message).map((email) => (
+                      <EmailResultCard
+                        key={`${message.id}-${email.threadId}`}
+                        email={email}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {message.role === "assistant" && message.toolCalls?.length ? (
+                <details className="group mt-3">
+                  <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium text-slate-400 transition hover:text-slate-500 [&::-webkit-details-marker]:hidden">
+                    <span className="flex h-4 w-4 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-slate-500 transition duration-200 group-open:border-slate-300 group-open:bg-white group-open:text-slate-700">
+                      <ChevronRight
+                        aria-hidden="true"
+                        className="details-chevron h-2.5 w-2.5"
+                        strokeWidth={2.25}
+                      />
+                    </span>
+                    <span>show toolcalls</span>
+                  </summary>
+                  <div className="mt-2 space-y-2 border-l border-slate-200 pl-3 text-xs leading-5 text-slate-500">
+                    {message.toolCalls.map((toolCall, index) => (
+                      <div key={`${message.id}-${toolCall.name}-${index}`}>
+                        <p className="font-medium text-slate-600">
+                          {formatToolCallName(toolCall.name)}
+                          {toolCall.status === "error" ? " (failed)" : ""}
+                        </p>
+                        <p>{summarizeToolCallArguments(toolCall.arguments)}</p>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              ) : null}
+            </article>
+          </div>
+        ))}
+        {isLoadingMessages ? (
+          <p className="text-sm leading-6 text-slate-500">Loading conversation...</p>
+        ) : null}
+        <div ref={messagesEndRef} />
+        </div>
+      </div>
+    </div>
+  );
+  const approvalQueuePane =
+    showsApprovalQueue && !isQueueCollapsed ? (
+      <section
+        className={`flex h-full min-h-0 flex-col border-b border-slate-200 bg-[linear-gradient(180deg,rgba(248,250,252,0.98),rgba(241,245,249,0.96))] ${
+          isExpanded ? "px-8 py-4 md:px-12" : "px-4 py-3"
+        }`}
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">
+              Approval queue
+            </p>
+            <p className="mt-1 text-xs leading-5 text-slate-600">
+              Drafted changes stay here until you approve or reject them.
+            </p>
+          </div>
+          <div className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 shadow-sm">
+            {drafts.length}
+          </div>
+        </div>
+
+        <div className="mt-2 min-h-0 flex-1 overflow-y-auto pr-1">
+          <div className="space-y-2 pb-1">
+            {drafts.map((draft) => (
+              <article
+                key={draft.id}
+                className="rounded-[1.1rem] border border-slate-200 bg-white p-3 shadow-[0_14px_34px_rgba(15,23,42,0.05)]"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="truncate text-sm font-semibold text-slate-950">
+                      {getDraftActionLabel(draft)}
+                    </h3>
+                    {!(
+                      draft.provider === "GMAIL" && draft.affectedEmails?.length
+                    ) ? (
+                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                        {getDraftCountLabel(draft)}
+                      </p>
+                    ) : null}
+                  </div>
+                  <p className="shrink-0 text-[11px] text-slate-400">
+                    {new Intl.DateTimeFormat(undefined, {
+                      dateStyle: "medium",
+                    }).format(new Date(draft.createdAt))}
+                  </p>
+                </div>
+
+                {draft.provider === "GMAIL" && draft.affectedEmails?.length ? (
+                  <details className="group mt-2 overflow-hidden rounded-[0.95rem] border border-slate-200 bg-slate-50">
+                    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-left transition hover:bg-slate-100 [&::-webkit-details-marker]:hidden">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500">
+                          <ChevronRight
+                            aria-hidden="true"
+                            className="details-chevron h-2.5 w-2.5"
+                            strokeWidth={2.25}
+                          />
+                        </span>
+                        <span className="text-xs leading-5 text-slate-600">
+                          {getDraftAffectedSummaryLabel(draft)}
+                        </span>
+                      </div>
+                    </summary>
+                    <div className="border-t border-slate-200 p-2">
+                      <div className="space-y-2">
+                        {draft.affectedEmails.map((email) => (
+                          <EmailResultCard
+                            key={`${draft.id}-${email.threadId}`}
+                            email={email}
+                            variant="compact"
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </details>
+                ) : null}
+
+                <div className="mt-3 flex gap-2">
+                  <button
+                    className="flex-1 rounded-full bg-slate-950 px-4 py-2 text-xs font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                    disabled={pendingDraftId === draft.id}
+                    onClick={() => void handleDraftAction(draft.id, "approve")}
+                    type="button"
+                  >
+                    {pendingDraftId === draft.id ? "Working..." : "Approve"}
+                  </button>
+                  <button
+                    className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                    disabled={pendingDraftId === draft.id}
+                    onClick={() => void handleDraftAction(draft.id, "reject")}
+                    type="button"
+                  >
+                    Reject
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+    ) : null;
 
   if (!isOpen) {
     return (
@@ -799,174 +1044,23 @@ export function OpenAIChat({
         </div>
       </header>
 
-      {showsApprovalQueue && !isQueueCollapsed ? (
-        <section
-          className={`border-b border-slate-200 bg-slate-950 text-slate-50 ${
-            isExpanded ? expandedGutterClass : "px-4 py-4"
-          }`}
-        >
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
-                Approval queue
-              </p>
-              <p className="mt-1 text-xs leading-5 text-slate-300">
-                Drafted changes stay here until you approve or reject them.
-              </p>
-            </div>
-            <div className="rounded-full border border-slate-700 px-3 py-1 text-xs font-medium text-slate-300">
-              {drafts.length}
-            </div>
-          </div>
-
-          <div className="mt-3 max-h-52 space-y-3 overflow-y-auto pr-1">
-            {drafts.map((draft) => (
-              <article
-                key={draft.id}
-                className="rounded-[1.25rem] border border-slate-800 bg-slate-900/80 p-4"
-              >
-                <h3 className="text-sm font-semibold text-white">
-                  {getDraftActionLabel(draft)}
-                </h3>
-                {draft.provider === "GMAIL" && draft.affectedEmails?.length ? (
-                  <details className="group mt-2 overflow-hidden rounded-[1.1rem] border border-slate-800 bg-slate-950/70">
-                    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-left transition hover:bg-slate-800/80 [&::-webkit-details-marker]:hidden">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-slate-900 text-slate-300">
-                          <ChevronRight
-                            aria-hidden="true"
-                            className="details-chevron h-2.5 w-2.5"
-                            strokeWidth={2.25}
-                          />
-                        </span>
-                        <span className="text-xs leading-5 text-slate-300">
-                          {getDraftAffectedSummaryLabel(draft)}
-                        </span>
-                      </div>
-                    </summary>
-                    <div className="border-t border-slate-800 bg-slate-900/40 p-2">
-                      <div className="space-y-2">
-                        {draft.affectedEmails.map((email) => (
-                          <EmailResultCard
-                            key={`${draft.id}-${email.threadId}`}
-                            email={email}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  </details>
-                ) : (
-                  <p className="mt-2 text-xs leading-5 text-slate-300">
-                    {getDraftCountLabel(draft)}
-                  </p>
-                )}
-
-                <div className="mt-3 flex gap-2">
-                  <button
-                    className="flex-1 rounded-full bg-white px-4 py-2 text-xs font-medium text-slate-950 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:bg-slate-500 disabled:text-slate-200"
-                    disabled={pendingDraftId === draft.id}
-                    onClick={() => void handleDraftAction(draft.id, "approve")}
-                    type="button"
-                  >
-                    {pendingDraftId === draft.id ? "Working..." : "Approve"}
-                  </button>
-                  <button
-                    className="rounded-full border border-slate-700 px-4 py-2 text-xs font-medium text-slate-200 transition hover:border-slate-500 hover:bg-slate-800 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-500"
-                    disabled={pendingDraftId === draft.id}
-                    onClick={() => void handleDraftAction(draft.id, "reject")}
-                    type="button"
-                  >
-                    Reject
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      <div className="min-h-0 flex-1 bg-slate-50">
-        <div
-          className={`h-full overflow-y-auto ${
-            isExpanded ? expandedGutterClass : "p-4"
-          }`}
-        >
-          <div className={`space-y-4 ${isExpanded ? "space-y-5" : ""}`}>
-          {messages.map((message) => (
-            <div
-              key={message.id}
-              className={`flex ${
-                message.role === "user" ? "justify-end" : "justify-start"
-              }`}
-            >
-              <article
-                className={`rounded-3xl shadow-sm ${
-                  isExpanded
-                    ? "max-w-[48rem] px-5 py-4 text-sm leading-7"
-                    : "max-w-[92%] px-4 py-3 text-sm leading-6"
-                } ${
-                  message.role === "user"
-                    ? "bg-slate-950 text-white"
-                    : "bg-white text-slate-700"
-                }`}
-              >
-                {message.role === "assistant" ? (
-                  <AssistantMessageContent content={message.content} />
-                ) : (
-                  <p className="whitespace-pre-wrap break-words">{message.content}</p>
-                )}
-                {getMessageEmailResults(message).length ? (
-                  <div className="mt-4 rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)]">
-                    <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                      {getMessageEmailResults(message).length === 1
-                        ? "Email result"
-                        : "Email results"}
-                    </p>
-                    <div className="space-y-3">
-                      {getMessageEmailResults(message).map((email) => (
-                        <EmailResultCard
-                          key={`${message.id}-${email.threadId}`}
-                          email={email}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-                {message.role === "assistant" && message.toolCalls?.length ? (
-                  <details className="group mt-3">
-                    <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium text-slate-400 transition hover:text-slate-500 [&::-webkit-details-marker]:hidden">
-                      <span className="flex h-4 w-4 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-slate-500 transition duration-200 group-open:border-slate-300 group-open:bg-white group-open:text-slate-700">
-                        <ChevronRight
-                          aria-hidden="true"
-                          className="details-chevron h-2.5 w-2.5"
-                          strokeWidth={2.25}
-                        />
-                      </span>
-                      <span>show toolcalls</span>
-                    </summary>
-                    <div className="mt-2 space-y-2 border-l border-slate-200 pl-3 text-xs leading-5 text-slate-500">
-                      {message.toolCalls.map((toolCall, index) => (
-                        <div key={`${message.id}-${toolCall.name}-${index}`}>
-                          <p className="font-medium text-slate-600">
-                            {formatToolCallName(toolCall.name)}
-                            {toolCall.status === "error" ? " (failed)" : ""}
-                          </p>
-                          <p>{summarizeToolCallArguments(toolCall.arguments)}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </details>
-                ) : null}
-              </article>
-            </div>
-          ))}
-          {isLoadingMessages ? (
-            <p className="text-sm leading-6 text-slate-500">Loading conversation...</p>
-          ) : null}
-          <div ref={messagesEndRef} />
-          </div>
+      {approvalQueuePane ? (
+        <div className="min-h-0 flex-1">
+          <ResizablePanelGroup
+            direction="vertical"
+          >
+            <ResizablePanel className="min-h-0" defaultSize={34} maxSize={62} minSize={18}>
+              {approvalQueuePane}
+            </ResizablePanel>
+            <ResizableHandle withHandle />
+            <ResizablePanel className="min-h-0" defaultSize={66} minSize={24}>
+              {conversationPane}
+            </ResizablePanel>
+          </ResizablePanelGroup>
         </div>
-      </div>
+      ) : (
+        <div className="min-h-0 flex-1">{conversationPane}</div>
+      )}
 
       <form
         className={`border-t border-slate-200 bg-white ${

@@ -4,5 +4,8 @@ You are ONLY allowed to make db migrations with `npx prisma migrate dev --name <
 Package management:
 Prefer `pnpm` over `npm` for install, dev, build, lint, and other package-script commands unless there is a specific reason not to.
 
+Verification:
+After code changes, especially UI/component edits, always run a compiler check (`pnpm exec tsc --noEmit`) before finishing. Lint is not enough on its own.
+
 Commits:
 Never commit anything. Let the user do git add, etc, unless explicitly asked.
