@@ -11,16 +11,16 @@ Let the assistant show Gmail results in chat without forcing the model to hand-f
 - `set_chat_response_mode` is the only model-visible signal that the UI should render structured email cards for the current assistant reply.
 - When the assistant does not call `set_chat_response_mode` with `showEmailResults: true`, the UI must not render email cards even if Gmail read tools were used.
 - When `showEmailResults` is enabled, email metadata becomes UI-owned. The backend must normalize the assistant text down to a short framing sentence if the model tries to restate subjects, senders, dates, snippets, or bodies in prose.
+- Email HTML should be sanitized and rendered as HTML, not passed through the markdown renderer used for assistant prose.
 
 ## What the UI shows
 
 When `showEmailResults` is enabled for an assistant message, chat renders one collapsible card per email with:
 
-- Subject in the card header
-- Sender
-- Formatted date and time
-- Message snippet/preview in the expanded body
-- Full message body text when available, with UI-owned truncation/expansion
+- Subject in the collapsed header
+- Compact date metadata in the header
+- No snippet/body preview in the collapsed state
+- Inline expanded body content when opened, using the full message body when available and falling back to the server snippet otherwise
 
 Cards are collapsed under the subject row by default and expand inline on click.
 

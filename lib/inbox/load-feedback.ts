@@ -57,20 +57,20 @@ export function getInboxLoadToastMessages(payload: InboxLoadFeedback) {
 
   if (payload.sorting.cacheHit) {
     messages.push(
-      `Inbox sorting cache hit: reused cached bucket memberships in ${formatInboxLoadDuration(payload.sorting.durationMs)}.`,
+      `Inbox cache hit: reused cached bucket memberships in ${formatInboxLoadDuration(payload.sorting.durationMs)}.`,
     );
     return messages;
   }
 
   if (payload.gmailFetch.cacheHit) {
     messages.push(
-      `Inbox sorting refreshed bucket memberships in ${formatInboxLoadDuration(payload.sorting.durationMs)}.`,
+      `Inbox cache refresh updated bucket memberships in ${formatInboxLoadDuration(payload.sorting.durationMs)}.`,
     );
     return messages;
   }
 
   messages.push(
-    `Inbox sorting finished in ${formatInboxLoadDuration(payload.sorting.durationMs)}.`,
+    `Inbox refresh and cache update finished in ${formatInboxLoadDuration(payload.sorting.durationMs)}.`,
   );
 
   return messages;

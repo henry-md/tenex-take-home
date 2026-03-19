@@ -74,4 +74,18 @@ describe("summarizeInboxSyncChanges", () => {
       removedThreadCount: 2,
     });
   });
+
+  it("treats reorder-only changes as mixed updates", () => {
+    expect(
+      summarizeInboxSyncChanges({
+        cachedThreadIds: ["a", "b", "c"],
+        currentThreadIds: ["b", "a", "c"],
+      }),
+    ).toEqual({
+      addedThreadCount: 0,
+      changedThreadCount: 2,
+      kind: "mixed",
+      removedThreadCount: 0,
+    });
+  });
 });

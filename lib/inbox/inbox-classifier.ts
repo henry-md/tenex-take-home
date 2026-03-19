@@ -112,9 +112,7 @@ function extractSenderDomain(sender: string | null) {
     return null;
   }
 
-  const matchedAddress =
-    sender.match(/<([^>]+)>/)?.[1] ??
-    sender.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
+  const matchedAddress = extractSenderAddress(sender);
 
   if (!matchedAddress) {
     return null;
@@ -123,6 +121,28 @@ function extractSenderDomain(sender: string | null) {
   const domain = matchedAddress.split("@")[1];
 
   return domain?.toLowerCase() ?? null;
+}
+
+function extractSenderAddress(sender: string | null) {
+  if (!sender) {
+    return null;
+  }
+
+  return (
+    sender.match(/<([^>]+)>/)?.[1] ??
+    sender.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ??
+    null
+  );
+}
+
+function extractSenderName(sender: string | null) {
+  if (!sender) {
+    return null;
+  }
+
+  const senderWithoutAddress = sender.replace(/\s*<[^>]+>\s*/, "").trim();
+
+  return senderWithoutAddress.length ? senderWithoutAddress : null;
 }
 
 function detectSignals(thread: EmailThreadSummary): ThreadSignals {
@@ -189,11 +209,12 @@ function classifyWithHeuristics(
   if (
     activeBucketNames.has("Important") &&
     signals.importantSignals &&
-    !signals.marketingSignals
+    !signals.marketingSignals &&
+    !signals.automatedSender
   ) {
     bucketNames.push("Important");
     rationaleParts.push(
-      "The thread has urgency or priority signals that suggest prompt attention.",
+      "The thread has urgency or priority signals from a non-automated sender that suggest prompt attention.",
     );
   }
 
@@ -267,13 +288,16 @@ function parseBucketMembershipBatch(value: string) {
 
 function toThreadClassificationPayload(thread: EmailThreadSummary) {
   const signals = detectSignals(thread);
+  const senderAddress = extractSenderAddress(thread.sender);
 
   return {
     labels: thread.labelIds,
     lastMessageAt: thread.lastMessageAt,
     preview: thread.snippet,
     sender: thread.sender,
+    senderAddress,
     senderDomain: signals.senderDomain,
+    senderName: extractSenderName(thread.sender),
     signals: {
       automatedSender: signals.automatedSender,
       financeSignals: signals.financeSignals,
@@ -323,6 +347,11 @@ async function classifyWithLLM(
                     "Return every applicable bucket for each thread as a non-empty list.",
                     "If confidence is low, still include the closest applicable bucket names and keep confidence low.",
                     "Follow each bucket prompt closely when deciding which buckets fit.",
+                    "The Important bucket should be selective: think roughly the top 5-10% most important threads in a typical inbox, not every legitimate or useful email.",
+                    "Important threads should usually come from a real person or a clearly critical account, billing, security, or work sender, not from bulk mail, newsletters, or organization-wide marketing mail.",
+                    "Treat sender identity as a first-class signal. Use sender, senderName, senderAddress, and senderDomain when deciding how important or legitimate the thread is.",
+                    "Do not treat urgency language alone as a reason to classify a thread as Important.",
+                    "Be skeptical of hype, calls to action, or pressure language from promotional, marketing, newsletter, betting, automated, or bulk senders.",
                     'Return strict JSON with this shape: {"classifications":[{"threadId":"...","bucketNames":["..."],"confidence":0.0,"rationale":"..."}]}',
                   ].join("\n"),
                 },
@@ -432,6 +461,11 @@ async function classifyTargetBucketWithLLM(
                     "You decide whether each Gmail inbox thread belongs in one target bucket.",
                     "Threads may belong in multiple buckets overall, so judge the target bucket independently.",
                     "Use the full bucket list only for context; return a decision for the target bucket only.",
+                    "The Important bucket should be selective: think roughly the top 5-10% most important threads in a typical inbox, not every legitimate or useful email.",
+                    "Important threads should usually come from a real person or a clearly critical account, billing, security, or work sender, not from bulk mail, newsletters, or organization-wide marketing mail.",
+                    "Treat sender identity as a first-class signal. Use sender, senderName, senderAddress, and senderDomain when deciding whether the bucket applies.",
+                    "Do not treat urgency language alone as a reason to classify a thread as Important.",
+                    "Be skeptical of hype, calls to action, or pressure language from promotional, marketing, newsletter, betting, automated, or bulk senders.",
                     'Return strict JSON with this shape: {"memberships":[{"threadId":"...","applies":true,"confidence":0.0,"rationale":"..."}]}',
                   ].join("\n"),
                 },

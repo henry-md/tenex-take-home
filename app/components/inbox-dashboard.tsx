@@ -101,6 +101,18 @@ function formatThreadTimestamp(value: string | null) {
   }).format(date);
 }
 
+function normalizeCollapsedPreviewText(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function truncateCollapsedPreview(value: string, maxLength: number) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
 function getBucketTone(name: string): BucketTone {
   return (
     BUCKET_TONES[name] ?? {
@@ -112,41 +124,53 @@ function getBucketTone(name: string): BucketTone {
 }
 
 function ThreadRow({ thread }: { thread: InboxThreadItem }) {
+  const expandedBody =
+    (typeof thread.body === "string" ? thread.body.trim() : "") || thread.preview;
+  const collapsedPreview = truncateCollapsedPreview(
+    normalizeCollapsedPreviewText(expandedBody),
+    280,
+  );
+
   return (
-    <details className="group overflow-hidden border-b border-slate-200 bg-white last:border-b-0">
-      <summary className="cursor-pointer list-none px-4 py-3 transition hover:bg-slate-50 [&::-webkit-details-marker]:hidden md:px-5">
-        <div className="flex items-start gap-3">
-          <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500">
+    <details className="group overflow-hidden border-b border-slate-200/80 bg-white/80 last:border-b-0">
+      <summary className="thread-row-summary cursor-pointer list-none px-4 py-2 transition hover:bg-slate-50/70 [&::-webkit-details-marker]:hidden md:px-5">
+        <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-3">
+          <span className="mt-2.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500">
             <ChevronRight
               aria-hidden="true"
               className="details-chevron h-2.5 w-2.5"
               strokeWidth={2.25}
             />
           </span>
-          <div className="grid min-w-0 flex-1 gap-2 md:grid-cols-[minmax(0,13rem)_minmax(0,1fr)_auto] md:items-start">
-            <div className="min-w-0">
-              <p className="truncate text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+          <div className="thread-row-shell min-w-0 px-4 py-2.5">
+            <div className="flex items-start justify-between gap-4">
+              <p className="min-w-0 truncate text-[0.7rem] font-semibold uppercase tracking-[0.15em] text-slate-400">
                 {thread.sender ?? "Unknown sender"}
               </p>
-            </div>
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-slate-950">
-                {thread.subject}
-              </p>
-              <p className="truncate text-sm text-slate-500">
-                {thread.preview}
+              <p className="shrink-0 pt-0.5 text-xs text-slate-500">
+                {formatThreadTimestamp(thread.lastMessageAt)}
               </p>
             </div>
-            <p className="shrink-0 text-xs text-slate-500 md:text-right">
-              {formatThreadTimestamp(thread.lastMessageAt)}
+            <p className="mt-px text-sm font-semibold leading-6 text-slate-950">
+              {thread.subject}
             </p>
+            <div className="thread-row-preview mt-1.5 overflow-hidden text-sm text-slate-500">
+              <p className="thread-row-preview-text">{collapsedPreview}</p>
+            </div>
           </div>
         </div>
       </summary>
-      <div className="border-t border-slate-200 bg-slate-50 px-4 py-4 md:px-5">
-        <p className="whitespace-pre-wrap text-sm leading-6 text-slate-600">
-          {thread.preview}
-        </p>
+      <div className="grid px-4 pb-0 transition-[grid-template-rows,padding-bottom] duration-250 ease-out [grid-template-rows:0fr] group-open:pb-4 group-open:[grid-template-rows:1fr] md:px-5">
+        <div className="overflow-hidden">
+          <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-3">
+            <span aria-hidden="true" className="h-0 w-4" />
+            <div className="thread-row-panel -mt-px px-4 py-3 opacity-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] transition-opacity duration-200 ease-out group-open:opacity-100 group-open:delay-75">
+              <p className="whitespace-pre-wrap text-sm leading-6 text-slate-600">
+                {expandedBody}
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
     </details>
   );

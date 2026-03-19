@@ -23,7 +23,7 @@ describe("getInboxLoadToastMessages", () => {
       }),
     ).toEqual([
       "Gmail thread cache hit: loaded 100 threads from cache.",
-      "Inbox sorting cache hit: reused cached bucket memberships in 24ms.",
+      "Inbox cache hit: reused cached bucket memberships in 24ms.",
     ]);
   });
 
@@ -47,7 +47,7 @@ describe("getInboxLoadToastMessages", () => {
       }),
     ).toEqual([
       "Fetched 100 Gmail threads in 18s.",
-      "Inbox sorting cache hit: reused cached bucket memberships in 920ms.",
+      "Inbox cache hit: reused cached bucket memberships in 920ms.",
     ]);
   });
 
@@ -71,7 +71,7 @@ describe("getInboxLoadToastMessages", () => {
       }),
     ).toEqual([
       "Gmail thread cache hit: loaded 100 threads from cache.",
-      "Inbox sorting refreshed bucket memberships in 1.3s.",
+      "Inbox cache refresh updated bucket memberships in 1.3s.",
     ]);
   });
 
@@ -95,7 +95,7 @@ describe("getInboxLoadToastMessages", () => {
       }),
     ).toEqual([
       "Synced 1 new Gmail thread in 4.2s.",
-      "Inbox sorting finished in 8.2s.",
+      "Inbox refresh and cache update finished in 8.2s.",
     ]);
   });
 
@@ -119,7 +119,7 @@ describe("getInboxLoadToastMessages", () => {
       }),
     ).toEqual([
       "Synced 9 Gmail deletions and refreshed the latest 100 threads in 12s.",
-      "Inbox sorting finished in 16s.",
+      "Inbox refresh and cache update finished in 16s.",
     ]);
   });
 
@@ -143,7 +143,7 @@ describe("getInboxLoadToastMessages", () => {
       }),
     ).toEqual([
       "Synced 5 Gmail thread changes in 2.5s.",
-      "Inbox sorting finished in 3.1s.",
+      "Inbox refresh and cache update finished in 3.1s.",
     ]);
   });
 });

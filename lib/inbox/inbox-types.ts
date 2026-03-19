@@ -4,7 +4,7 @@ import { type InboxSyncChangeSummary } from "@/lib/inbox/sync-change-summary";
 export const DEFAULT_BUCKETS = [
   {
     description:
-      "Use Important for urgent, time-sensitive, or high-consequence threads that likely need prompt attention from the user.",
+      "Use Important only for the small set of threads that are clearly the user's highest-priority inbox items, roughly the top 5-10% most important emails. These should usually be urgent, time-sensitive, or high-consequence and typically come from real people or clearly important account, billing, security, or work contacts. Weigh sender identity heavily. Do not use Important for newsletters, marketing, growth, betting, promotional, bulk, or hype-driven emails, and do not use it for organization mailings just because they use urgency language or calls to action.",
     name: "Important",
   },
   {
@@ -74,6 +74,7 @@ export type FinalClassification = {
 };
 
 export type InboxThreadItem = {
+  body: string;
   bucketNames: string[];
   lastMessageAt: string | null;
   preview: string;
@@ -143,7 +144,7 @@ export type InboxStatePayload = {
   configuredThreadLimit: number;
   threadIds: string[];
   threadsById: Record<string, CachedThreadSnapshot>;
-  version: 2;
+  version: 3;
 };
 
 export type BucketMembershipClassification = {

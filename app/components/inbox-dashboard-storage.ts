@@ -17,7 +17,7 @@ type PendingInboxRefresh = {
 
 type InboxDashboardCacheStorage = {
   inboxesByThreadLimit: Record<string, InboxHomepageData>;
-  version: 2;
+  version: 3;
 };
 
 function isInboxHomepageData(value: unknown): value is InboxHomepageData {
@@ -40,7 +40,7 @@ function createInboxDashboardCacheStorage(
 ): InboxDashboardCacheStorage {
   return {
     inboxesByThreadLimit,
-    version: 2,
+    version: 3,
   };
 }
 
@@ -64,7 +64,7 @@ function readInboxDashboardCacheStorage() {
       parsed &&
       typeof parsed === "object" &&
       "version" in parsed &&
-      parsed.version === 2 &&
+      parsed.version === 3 &&
       "inboxesByThreadLimit" in parsed &&
       parsed.inboxesByThreadLimit &&
       typeof parsed.inboxesByThreadLimit === "object"
@@ -148,7 +148,23 @@ export function readCachedInboxFromStorage(expectedThreadLimit?: number) {
   }
 
   if (typeof expectedThreadLimit === "number") {
-    return storage.inboxesByThreadLimit[String(expectedThreadLimit)] ?? null;
+    const exactInbox =
+      storage.inboxesByThreadLimit[String(expectedThreadLimit)] ?? null;
+
+    if (exactInbox) {
+      return exactInbox;
+    }
+
+    const smallerCompatibleInboxes = Object.values(storage.inboxesByThreadLimit)
+      .filter(
+        (inbox) => inbox.configuredThreadLimit <= expectedThreadLimit,
+      )
+      .sort(
+        (left, right) =>
+          right.configuredThreadLimit - left.configuredThreadLimit,
+      );
+
+    return smallerCompatibleInboxes[0] ?? null;
   }
 
   return Object.values(storage.inboxesByThreadLimit)[0] ?? null;

@@ -33,3 +33,71 @@ body {
 details[open] > summary .details-chevron {
   transform: rotate(90deg);
 }
+
+.thread-row-summary {
+  outline: none;
+  transition: padding-bottom 200ms ease-out;
+}
+
+.thread-row-summary:focus,
+.thread-row-summary:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+details[open] > summary.thread-row-summary {
+  padding-bottom: 0;
+}
+
+.thread-row-shell {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  transition: padding-bottom 200ms ease-out;
+}
+
+details[open] > summary .thread-row-shell {
+  background: rgb(255 255 255);
+  border: 1px solid rgb(226 232 240 / 0.8);
+  border-bottom: 0;
+  border-radius: 1.15rem 1.15rem 0 0;
+  padding-bottom: 0;
+}
+
+.thread-row-preview {
+  max-height: 3.5rem;
+  opacity: 1;
+  transition:
+    max-height 200ms ease-out,
+    margin-top 200ms ease-out,
+    opacity 200ms ease-out;
+}
+
+details[open] > summary .thread-row-preview {
+  margin-top: 0;
+  max-height: 0;
+  opacity: 0;
+}
+
+.thread-row-preview-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.thread-row-panel {
+  background: linear-gradient(
+    to bottom,
+    rgb(255 255 255) 0,
+    rgb(248 250 252 / 0.88) 10px,
+    rgb(248 250 252 / 0.88) 100%
+  );
+  border: 0;
+  border-radius: 0 0 1.15rem 1.15rem;
+}
+
+details[open] .thread-row-panel {
+  border: 1px solid rgb(226 232 240 / 0.8);
+  border-top: 0;
+}

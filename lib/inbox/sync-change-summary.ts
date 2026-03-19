@@ -35,6 +35,19 @@ function areThreadIdsEqual(left: string[], right: string[]) {
   return true;
 }
 
+function countChangedPositions(left: string[], right: string[]) {
+  const maxLength = Math.max(left.length, right.length);
+  let changedPositionCount = 0;
+
+  for (let index = 0; index < maxLength; index += 1) {
+    if (left[index] !== right[index]) {
+      changedPositionCount += 1;
+    }
+  }
+
+  return changedPositionCount;
+}
+
 function inferKindFromThreadOrder(input: {
   cachedThreadIds: string[];
   currentThreadIds: string[];
@@ -125,10 +138,22 @@ export function summarizeInboxSyncChanges(input: {
   );
 
   if (!addedThreadIds.length && !removedThreadIds.length) {
+    if (areThreadIdsEqual(input.cachedThreadIds, input.currentThreadIds)) {
+      return {
+        addedThreadCount: 0,
+        changedThreadCount: 0,
+        kind: "none",
+        removedThreadCount: 0,
+      };
+    }
+
     return {
       addedThreadCount: 0,
-      changedThreadCount: 0,
-      kind: "none",
+      changedThreadCount: countChangedPositions(
+        input.cachedThreadIds,
+        input.currentThreadIds,
+      ),
+      kind: "mixed",
       removedThreadCount: 0,
     };
   }

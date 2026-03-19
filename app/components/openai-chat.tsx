@@ -13,8 +13,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
-import rehypeRaw from "rehype-raw";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import sanitizeHtml from "sanitize-html";
 import { toast } from "sonner";
 import {
   FormEvent,
@@ -35,11 +34,6 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/app/components/ui/alert-dialog";
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/app/components/ui/resizable";
 import { type ApprovalModeOption } from "@/lib/google-workspace/approval-mode-options";
 import { cn } from "@/lib/utils";
 
@@ -184,20 +178,21 @@ function summarizeToolCallArguments(argumentsObject: Record<string, unknown>) {
     .join(", ");
 }
 
-function formatEmailTimestamp(value: string | null) {
+function formatEmailSnapshotDate(value: string | null) {
   if (!value) {
-    return "Unknown time";
+    return "Unknown date";
   }
 
   const date = new Date(value);
 
   if (Number.isNaN(date.getTime())) {
-    return "Unknown time";
+    return "Unknown date";
   }
 
   return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
+    month: "2-digit",
+    day: "2-digit",
+    year: "2-digit",
   }).format(date);
 }
 
@@ -220,30 +215,6 @@ function getMessageEmailResults(message: ChatMessage) {
 
   return emailResults.slice(0, displayDirective.maxCount);
 }
-
-const EMAIL_BODY_SANITIZE_SCHEMA = {
-  ...defaultSchema,
-  attributes: {
-    ...defaultSchema.attributes,
-    a: [...(defaultSchema.attributes?.a ?? []), "href", "rel", "target"],
-    td: [...(defaultSchema.attributes?.td ?? []), "colspan", "rowspan"],
-    th: [...(defaultSchema.attributes?.th ?? []), "colspan", "rowspan"],
-  },
-  tagNames: [
-    ...(defaultSchema.tagNames ?? []),
-    "div",
-    "hr",
-    "section",
-    "span",
-    "table",
-    "tbody",
-    "td",
-    "tfoot",
-    "th",
-    "thead",
-    "tr",
-  ],
-};
 
 function getEmailBodyText(email: EmailResult) {
   return email.body.trim() || email.snippet.trim();
@@ -278,115 +249,125 @@ function truncateSubject(value: string, maxLength: number) {
   return `${value.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
+function sanitizeEmailHtmlBody(value: string) {
+  const strippedHtml = value
+    .replace(/<!doctype[^>]*>/gi, "")
+    .replace(/<\?xml[^>]*>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<head[\s\S]*?<\/head>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<(meta|link|title|base)[^>]*>/gi, "");
+
+  return sanitizeHtml(strippedHtml, {
+    allowedAttributes: {
+      a: ["href", "name", "target", "rel"],
+      div: ["align"],
+      p: ["align"],
+      table: ["cellpadding", "cellspacing", "role"],
+      td: ["align", "colspan", "rowspan", "valign"],
+      th: ["align", "colspan", "rowspan", "valign"],
+    },
+    allowedTags: [
+      "a",
+      "article",
+      "blockquote",
+      "br",
+      "div",
+      "em",
+      "hr",
+      "li",
+      "ol",
+      "p",
+      "section",
+      "span",
+      "strong",
+      "table",
+      "tbody",
+      "td",
+      "tfoot",
+      "th",
+      "thead",
+      "tr",
+      "u",
+      "ul",
+    ],
+    disallowedTagsMode: "discard",
+    nonTextTags: ["head", "script", "style", "textarea", "title"],
+    transformTags: {
+      a: sanitizeHtml.simpleTransform("a", {
+        rel: "noreferrer noopener",
+        target: "_blank",
+      }),
+    },
+  }).trim();
+}
+
 function EmailBodyContent({ email }: { email: EmailResult }) {
   if (email.bodyHtml?.trim()) {
+    const sanitizedHtml = sanitizeEmailHtmlBody(email.bodyHtml);
+
+    if (sanitizedHtml) {
+      return (
+        <div
+          className={cn(
+            "break-words text-sm leading-6 text-slate-700",
+            "[&_a]:font-medium [&_a]:text-slate-900 [&_a]:underline [&_a]:decoration-slate-300 [&_a]:underline-offset-2",
+            "[&_blockquote]:border-l-2 [&_blockquote]:border-slate-200 [&_blockquote]:pl-3 [&_blockquote]:italic [&_blockquote]:text-slate-600",
+            "[&_li]:ml-4 [&_li]:whitespace-pre-wrap",
+            "[&_ol]:space-y-1 [&_ol]:pl-4 [&_ol]:list-decimal",
+            "[&_p]:whitespace-pre-wrap [&_p]:my-0",
+            "[&_strong]:font-semibold [&_strong]:text-slate-950",
+            "[&_table]:w-full [&_table]:border-separate [&_table]:border-spacing-0 [&_table]:text-left [&_table]:text-sm",
+            "[&_td]:border-0 [&_td]:p-0 [&_td]:align-top",
+            "[&_th]:border-0 [&_th]:bg-transparent [&_th]:p-0 [&_th]:font-semibold [&_th]:text-slate-900",
+            "[&_ul]:space-y-1 [&_ul]:pl-4 [&_ul]:list-disc",
+          )}
+          dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
+        />
+      );
+    }
+
     return (
-      <div className="space-y-3 break-words text-sm leading-7 text-slate-700">
-        <ReactMarkdown
-          components={{
-            a: ({ children, href }) => (
-              <a
-                className="font-medium text-slate-900 underline decoration-slate-300 underline-offset-2 transition hover:text-slate-700"
-                href={href}
-                rel="noreferrer"
-                target="_blank"
-              >
-                {children}
-              </a>
-            ),
-            blockquote: ({ children }) => (
-              <blockquote className="border-l-2 border-slate-200 pl-4 italic text-slate-600">
-                {children}
-              </blockquote>
-            ),
-            li: ({ children }) => (
-              <li className="ml-5 list-disc whitespace-pre-wrap">{children}</li>
-            ),
-            ol: ({ children }) => <ol className="space-y-1">{children}</ol>,
-            p: ({ children }) => <p className="whitespace-pre-wrap">{children}</p>,
-            strong: ({ children }) => (
-              <strong className="font-semibold text-slate-950">{children}</strong>
-            ),
-            table: ({ children }) => (
-              <div className="overflow-x-auto rounded-xl border border-slate-200">
-                <table className="min-w-full border-collapse text-left text-sm">
-                  {children}
-                </table>
-              </div>
-            ),
-            td: ({ children }) => (
-              <td className="border-t border-slate-200 px-3 py-2 align-top">
-                {children}
-              </td>
-            ),
-            th: ({ children }) => (
-              <th className="bg-slate-50 px-3 py-2 font-semibold text-slate-900">
-                {children}
-              </th>
-            ),
-            ul: ({ children }) => <ul className="space-y-1">{children}</ul>,
-          }}
-          rehypePlugins={[rehypeRaw, [rehypeSanitize, EMAIL_BODY_SANITIZE_SCHEMA]]}
-        >
-          {email.bodyHtml}
-        </ReactMarkdown>
-      </div>
+      <p className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">
+        {getEmailBodyText(email)}
+      </p>
     );
   }
 
   return (
-    <p className="whitespace-pre-wrap break-words text-sm leading-7 text-slate-700">
+    <p className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">
       {getEmailBodyText(email)}
     </p>
   );
 }
 
-function EmailResultCard({
-  email,
-  variant = "default",
-}: {
-  email: EmailResult;
-  variant?: "compact" | "default";
-}) {
-  const showsBody = hasRenderedEmailBody(email);
-  const isCompact = variant === "compact";
-
-  if (isCompact) {
-    return (
-      <div className="overflow-hidden rounded-[1rem] border border-slate-200 bg-white px-3 py-2.5 shadow-[0_10px_26px_rgba(15,23,42,0.06)]">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <p className="break-words text-[13px] font-semibold leading-5 text-slate-900">
-              {truncateSubject(email.subject, 100)}
-            </p>
-            <p className="mt-0.5 truncate text-[12px] text-slate-500">
-              {email.sender ?? "Unknown sender"}
-            </p>
-            <p className="mt-0.5 truncate text-[13px] text-slate-500">
-              {email.snippet || "No message preview available."}
-            </p>
-          </div>
-          <p className="shrink-0 text-[11px] text-slate-500">
-            {formatEmailTimestamp(email.lastMessageAt)}
+function CompactEmailResultCard({ email }: { email: EmailResult }) {
+  return (
+    <div className="overflow-hidden rounded-[1rem] border border-slate-200 bg-white px-3 py-2.5 shadow-[0_10px_26px_rgba(15,23,42,0.06)]">
+      <div className="min-w-0">
+        <div className="flex items-start gap-2">
+          <p className="min-w-0 flex-1 break-words text-[13px] font-semibold leading-5 text-slate-900">
+            {truncateSubject(email.subject, 100)}
+          </p>
+          <p className="shrink-0 whitespace-nowrap pt-0.5 text-[10px] leading-4 text-slate-400">
+            {formatEmailSnapshotDate(email.lastMessageAt)}
           </p>
         </div>
+        <p className="mt-0.5 line-clamp-2 break-words text-[13px] text-slate-500">
+          {email.snippet || "No message preview available."}
+        </p>
       </div>
-    );
-  }
+    </div>
+  );
+}
+
+function ChatEmailResultCard({ email }: { email: EmailResult }) {
+  const bodyFallback = email.snippet || "No message preview available.";
 
   return (
-    <details
-      className={cn(
-        "group overflow-hidden border bg-white",
-        "rounded-[1.35rem] border-slate-300/90 shadow-[0_18px_44px_rgba(15,23,42,0.08)]",
-      )}
-    >
-      <summary
-        className={cn(
-          "cursor-pointer list-none transition hover:bg-slate-50 [&::-webkit-details-marker]:hidden",
-          "bg-[linear-gradient(180deg,rgba(248,250,252,0.96),rgba(255,255,255,0.98))] px-4 py-3.5",
-        )}
-      >
+    <details className="group overflow-hidden rounded-[1rem] border border-slate-200 bg-white shadow-[0_10px_26px_rgba(15,23,42,0.06)]">
+      <summary className="cursor-pointer list-none px-3 py-2.5 transition hover:bg-slate-50 [&::-webkit-details-marker]:hidden">
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-start gap-2">
             <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500">
@@ -396,47 +377,24 @@ function EmailResultCard({
                 strokeWidth={2.25}
               />
             </span>
-            <div className="min-w-0">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                Email
-              </p>
-              <p className="truncate text-sm font-semibold text-slate-900">
-                {email.subject}
-              </p>
-              <p className="truncate text-xs text-slate-500">
-                {email.sender ?? "Unknown sender"}
-              </p>
-              <p className="truncate text-sm text-slate-500">
-                {email.snippet || "No message preview available."}
-              </p>
-            </div>
+            <p className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-900">
+              {email.subject}
+            </p>
           </div>
-          <p className="shrink-0 text-xs text-slate-500">
-            {formatEmailTimestamp(email.lastMessageAt)}
+          <p className="shrink-0 whitespace-nowrap pt-0.5 text-[10px] leading-4 text-slate-400">
+            {formatEmailSnapshotDate(email.lastMessageAt)}
           </p>
         </div>
       </summary>
-      <div
-        className={cn(
-          "border-t border-slate-200 bg-[linear-gradient(180deg,rgba(248,250,252,0.85),rgba(241,245,249,0.55))]",
-          "p-4",
-        )}
-      >
-        <div className="overflow-hidden rounded-[1.1rem] border border-slate-200 bg-white">
-          <div className="border-b border-slate-200 px-4 py-3">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Message body
+      <div className="border-t border-slate-200 bg-slate-50/70 px-3 py-3">
+        <div className="max-h-52 overflow-y-auto">
+          {hasRenderedEmailBody(email) ? (
+            <EmailBodyContent email={email} />
+          ) : (
+            <p className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-600">
+              {bodyFallback}
             </p>
-          </div>
-          <div className="max-h-[28rem] overflow-y-auto px-4 py-4">
-            {showsBody ? (
-              <EmailBodyContent email={email} />
-            ) : (
-              <p className="text-sm leading-7 text-slate-500">
-                No additional message body is available beyond the preview.
-              </p>
-            )}
-          </div>
+          )}
         </div>
       </div>
     </details>
@@ -701,9 +659,12 @@ export function OpenAIChat({
     }
   }
 
+  const pendingDrafts = drafts.filter((draft) => draft.status === "PENDING");
   const hasPersistedMessages = messages.length > 1;
-  const needsQueueAttention = drafts.length > 0;
+  const needsQueueAttention = pendingDrafts.length > 0;
   const showsApprovalQueue = !isLoadingDrafts && needsQueueAttention;
+  const showsQueueView = showsApprovalQueue && !isQueueCollapsed;
+  const showsCompactQueueView = showsQueueView && !isExpanded;
   const conversationPane = (
     <div className="h-full bg-slate-50">
       <div
@@ -736,20 +697,13 @@ export function OpenAIChat({
                 <p className="whitespace-pre-wrap break-words">{message.content}</p>
               )}
               {getMessageEmailResults(message).length ? (
-                <div className="mt-4 rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)]">
-                  <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                    {getMessageEmailResults(message).length === 1
-                      ? "Email result"
-                      : "Email results"}
-                  </p>
-                  <div className="space-y-3">
-                    {getMessageEmailResults(message).map((email) => (
-                      <EmailResultCard
-                        key={`${message.id}-${email.threadId}`}
-                        email={email}
-                      />
-                    ))}
-                  </div>
+                <div className="mt-4 space-y-3">
+                  {getMessageEmailResults(message).map((email) => (
+                    <ChatEmailResultCard
+                      key={`${message.id}-${email.threadId}`}
+                      email={email}
+                    />
+                  ))}
                 </div>
               ) : null}
               {message.role === "assistant" && message.toolCalls?.length ? (
@@ -789,10 +743,12 @@ export function OpenAIChat({
     </div>
   );
   const approvalQueuePane =
-    showsApprovalQueue && !isQueueCollapsed ? (
+    showsQueueView ? (
       <section
-        className={`flex h-full min-h-0 flex-col border-b border-slate-200 bg-[linear-gradient(180deg,rgba(248,250,252,0.98),rgba(241,245,249,0.96))] ${
-          isExpanded ? "px-8 py-4 md:px-12" : "px-4 py-3"
+        className={`flex min-h-0 flex-col bg-[linear-gradient(180deg,rgba(248,250,252,0.98),rgba(241,245,249,0.96))] ${
+          isExpanded
+            ? "border-b border-slate-200 px-8 py-4 md:px-12"
+            : "flex-1 px-4 py-3"
         }`}
       >
         <div className="flex items-center justify-between gap-3">
@@ -804,14 +760,16 @@ export function OpenAIChat({
               Drafted changes stay here until you approve or reject them.
             </p>
           </div>
-          <div className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 shadow-sm">
-            {drafts.length}
-          </div>
         </div>
 
-        <div className="mt-2 min-h-0 flex-1 overflow-y-auto pr-1">
+        <div
+          className={cn(
+            "mt-2 min-h-0 overflow-y-auto pr-1",
+            isExpanded ? "max-h-[24rem]" : "flex-1",
+          )}
+        >
           <div className="space-y-2 pb-1">
-            {drafts.map((draft) => (
+            {pendingDrafts.map((draft) => (
               <article
                 key={draft.id}
                 className="rounded-[1.1rem] border border-slate-200 bg-white p-3 shadow-[0_14px_34px_rgba(15,23,42,0.05)]"
@@ -855,10 +813,9 @@ export function OpenAIChat({
                     <div className="border-t border-slate-200 p-2">
                       <div className="space-y-2">
                         {draft.affectedEmails.map((email) => (
-                          <EmailResultCard
+                          <CompactEmailResultCard
                             key={`${draft.id}-${email.threadId}`}
                             email={email}
-                            variant="compact"
                           />
                         ))}
                       </div>
@@ -866,9 +823,9 @@ export function OpenAIChat({
                   </details>
                 ) : null}
 
-                <div className="mt-3 flex gap-2">
+                <div className="mt-3 flex justify-start gap-2">
                   <button
-                    className="flex-1 rounded-full bg-slate-950 px-4 py-2 text-xs font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                    className="inline-flex w-1/2 items-center justify-center rounded-full bg-slate-950 px-4 py-2 text-xs font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
                     disabled={pendingDraftId === draft.id}
                     onClick={() => void handleDraftAction(draft.id, "approve")}
                     type="button"
@@ -876,7 +833,7 @@ export function OpenAIChat({
                     {pendingDraftId === draft.id ? "Working..." : "Approve"}
                   </button>
                   <button
-                    className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                    className="inline-flex w-1/2 items-center justify-center rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
                     disabled={pendingDraftId === draft.id}
                     onClick={() => void handleDraftAction(draft.id, "reject")}
                     type="button"
@@ -902,7 +859,7 @@ export function OpenAIChat({
         <MessageSquare aria-hidden="true" className="h-6 w-6" strokeWidth={2} />
         {needsQueueAttention ? (
           <span className="absolute -right-1 -top-1 min-w-6 rounded-full bg-amber-400 px-1.5 py-0.5 text-xs font-semibold text-slate-950">
-            {drafts.length}
+            {pendingDrafts.length}
           </span>
         ) : null}
       </button>
@@ -922,9 +879,9 @@ export function OpenAIChat({
           isExpanded ? expandedGutterClass : "px-4 py-4"
         }`}
       >
-        <div className="flex items-start justify-between gap-3">
-          <div className="space-y-2">
-            <div>
+        <div className="space-y-2">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold text-slate-950">
                 Workspace assistant
               </p>
@@ -932,238 +889,234 @@ export function OpenAIChat({
                 Search Gmail or Calendar without leaving the inbox board.
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700">
-                {initialApprovalMode.label}
-              </span>
-              {showsApprovalQueue ? (
-                <button
-                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] transition ${
-                    isQueueCollapsed
-                      ? "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
-                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                  }`}
-                  onClick={() => setIsQueueCollapsed((current) => !current)}
-                  type="button"
-                >
-                  <ShieldAlert aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2} />
-                  {drafts.length} pending
-                  {isQueueCollapsed ? (
-                    <TriangleAlert aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2} />
-                  ) : null}
-                </button>
-              ) : null}
+
+            <div className="shrink-0 pr-2 flex items-center gap-2">
+              <button
+                aria-label={isExpanded ? "Collapse assistant" : "Expand assistant"}
+                className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                onClick={() => setIsExpanded((current) => !current)}
+                type="button"
+              >
+                {isExpanded ? (
+                  <Minimize2
+                    aria-hidden="true"
+                    className="h-[18px] w-[18px]"
+                    strokeWidth={1.9}
+                  />
+                ) : (
+                  <Maximize2
+                    aria-hidden="true"
+                    className="h-[18px] w-[18px]"
+                    strokeWidth={1.9}
+                  />
+                )}
+              </button>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <button
+                    aria-label="Delete chat history"
+                    className="flex h-9 w-9 items-center justify-center rounded-full border border-rose-200 bg-rose-50 text-rose-700 transition hover:border-rose-300 hover:bg-rose-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+                    disabled={!hasPersistedMessages || isDeletingChat || isSubmitting}
+                    type="button"
+                  >
+                    <Trash2
+                      aria-hidden="true"
+                      className="h-[16px] w-[16px]"
+                      strokeWidth={1.9}
+                    />
+                  </button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete this chat?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This permanently removes every saved message in this
+                      conversation. Google Workspace approval drafts will stay in
+                      the queue.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel disabled={isDeletingChat}>
+                      Keep chat
+                    </AlertDialogCancel>
+                    <AlertDialogAction
+                      disabled={isDeletingChat}
+                      onClick={() => void handleDeleteChat()}
+                    >
+                      {isDeletingChat ? "Deleting..." : "Delete chat"}
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+              <Link
+                aria-label="Open settings"
+                className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                href="/settings"
+              >
+                <Settings2
+                  aria-hidden="true"
+                  className="h-[18px] w-[18px]"
+                  strokeWidth={1.9}
+                />
+              </Link>
+              <button
+                aria-label="Collapse assistant"
+                className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                onClick={() => {
+                  setIsExpanded(false);
+                  setIsOpen(false);
+                }}
+                type="button"
+              >
+                <X
+                  aria-hidden="true"
+                  className="h-[18px] w-[18px]"
+                  strokeWidth={2}
+                />
+              </button>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              aria-label={isExpanded ? "Collapse assistant" : "Expand assistant"}
-              className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-              onClick={() => setIsExpanded((current) => !current)}
-              type="button"
-            >
-              {isExpanded ? (
-                <Minimize2
-                  aria-hidden="true"
-                  className="h-[18px] w-[18px]"
-                  strokeWidth={1.9}
-                />
-              ) : (
-                <Maximize2
-                  aria-hidden="true"
-                  className="h-[18px] w-[18px]"
-                  strokeWidth={1.9}
-                />
-              )}
-            </button>
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <button
-                  aria-label="Delete chat history"
-                  className="flex h-9 w-9 items-center justify-center rounded-full border border-rose-200 bg-rose-50 text-rose-700 transition hover:border-rose-300 hover:bg-rose-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
-                  disabled={!hasPersistedMessages || isDeletingChat || isSubmitting}
-                  type="button"
-                >
-                  <Trash2
-                    aria-hidden="true"
-                    className="h-[16px] w-[16px]"
-                    strokeWidth={1.9}
-                  />
-                </button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Delete this chat?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    This permanently removes every saved message in this
-                    conversation. Google Workspace approval drafts will stay in
-                    the queue.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel disabled={isDeletingChat}>
-                    Keep chat
-                  </AlertDialogCancel>
-                  <AlertDialogAction
-                    disabled={isDeletingChat}
-                    onClick={() => void handleDeleteChat()}
-                  >
-                    {isDeletingChat ? "Deleting..." : "Delete chat"}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-            <Link
-              aria-label="Open settings"
-              className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-              href="/settings"
-            >
-              <Settings2
-                aria-hidden="true"
-                className="h-[18px] w-[18px]"
-                strokeWidth={1.9}
-              />
-            </Link>
-            <button
-              aria-label="Collapse assistant"
-              className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-              onClick={() => {
-                setIsExpanded(false);
-                setIsOpen(false);
-              }}
-              type="button"
-            >
-              <X
-                aria-hidden="true"
-                className="h-[18px] w-[18px]"
-                strokeWidth={2}
-              />
-            </button>
+          <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap pb-1">
+            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-700">
+              {initialApprovalMode.label}
+            </span>
+            {showsApprovalQueue ? (
+              <button
+                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] transition ${
+                  isQueueCollapsed
+                    ? "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
+                    : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                }`}
+                onClick={() => setIsQueueCollapsed((current) => !current)}
+                type="button"
+              >
+                <ShieldAlert aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2} />
+                {pendingDrafts.length} pending
+                {isQueueCollapsed ? (
+                  <TriangleAlert aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2} />
+                ) : null}
+              </button>
+            ) : null}
           </div>
         </div>
       </header>
 
-      {approvalQueuePane ? (
-        <div className="min-h-0 flex-1">
-          <ResizablePanelGroup
-            direction="vertical"
-          >
-            <ResizablePanel className="min-h-0" defaultSize={34} maxSize={62} minSize={18}>
-              {approvalQueuePane}
-            </ResizablePanel>
-            <ResizableHandle withHandle />
-            <ResizablePanel className="min-h-0" defaultSize={66} minSize={24}>
-              {conversationPane}
-            </ResizablePanel>
-          </ResizablePanelGroup>
+      {showsCompactQueueView ? (
+        <div className="min-h-0 flex-1">{approvalQueuePane}</div>
+      ) : approvalQueuePane ? (
+        <div className="flex min-h-0 flex-1 flex-col">
+          {approvalQueuePane}
+          <div className="min-h-0 flex-1">{conversationPane}</div>
         </div>
       ) : (
         <div className="min-h-0 flex-1">{conversationPane}</div>
       )}
 
-      <form
-        className={`border-t border-slate-200 bg-white ${
-          isExpanded ? expandedGutterClass : "p-4"
-        }`}
-        onSubmit={handleSubmit}
-      >
-        <div className={`flex flex-col ${isExpanded ? "gap-4" : "gap-3"}`}>
-          <div className="relative">
-            <textarea
-              className={`w-full rounded-[1.25rem] border border-slate-200 bg-slate-50 text-slate-900 outline-none transition focus:border-slate-400 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500 ${
-                isExpanded
-                  ? "min-h-28 px-5 py-4 pr-16 text-sm"
-                  : "min-h-24 px-4 py-3 pr-14 text-sm"
-              }`}
-              disabled={isLoadingMessages || isDeletingChat}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (isSubmitting && event.key === "Enter") {
-                  event.preventDefault();
-                  return;
-                }
-
-                if (
-                  event.key !== "Enter" ||
-                  event.shiftKey ||
-                  event.altKey ||
-                  event.ctrlKey ||
-                  event.metaKey ||
-                  event.nativeEvent.isComposing
-                ) {
-                  return;
-                }
-
-                event.preventDefault();
-                event.currentTarget.form?.requestSubmit();
-              }}
-              placeholder="Ask Gmail or Calendar to search, summarize, or draft a change."
-              value={input}
-            />
-            <button
-              aria-controls="prompt-help-tooltip"
-              aria-expanded={isPromptHelpOpen}
-              aria-label={
-                isPromptHelpOpen ? "Hide prompt examples" : "Show prompt examples"
-              }
-              className={`absolute flex items-center justify-center rounded-full border border-slate-200 bg-white font-semibold text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-700 ${
-                isExpanded
-                  ? "right-4 top-4 h-9 w-9 text-sm"
-                  : "right-3 top-3 h-8 w-8 text-sm"
-              }`}
-              onClick={() => setIsPromptHelpOpen((current) => !current)}
-              type="button"
-            >
-              {isPromptHelpOpen ? (
-                <X aria-hidden="true" className="h-4 w-4" strokeWidth={2} />
-              ) : (
-                "?"
-              )}
-            </button>
-            {isPromptHelpOpen ? (
-              <div
-                className={`absolute bottom-[calc(100%+0.75rem)] right-0 z-10 w-full rounded-[1.25rem] border border-slate-200 bg-white shadow-[0_20px_50px_rgba(15,23,42,0.14)] ${
-                  isExpanded ? "max-w-sm p-4" : "max-w-sm p-4"
+      {!showsCompactQueueView ? (
+        <form
+          className={`border-t border-slate-200 bg-white ${
+            isExpanded ? expandedGutterClass : "p-4"
+          }`}
+          onSubmit={handleSubmit}
+        >
+          <div className={`flex flex-col ${isExpanded ? "gap-4" : "gap-3"}`}>
+            <div className="relative">
+              <textarea
+                className={`w-full rounded-[1.25rem] border border-slate-200 bg-slate-50 text-slate-900 outline-none transition focus:border-slate-400 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500 ${
+                  isExpanded
+                    ? "min-h-28 px-5 py-4 pr-16 text-sm"
+                    : "min-h-24 px-4 py-3 pr-14 text-sm"
                 }`}
-                id="prompt-help-tooltip"
-                role="tooltip"
+                disabled={isLoadingMessages || isDeletingChat}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (isSubmitting && event.key === "Enter") {
+                    event.preventDefault();
+                    return;
+                  }
+
+                  if (
+                    event.key !== "Enter" ||
+                    event.shiftKey ||
+                    event.altKey ||
+                    event.ctrlKey ||
+                    event.metaKey ||
+                    event.nativeEvent.isComposing
+                  ) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  event.currentTarget.form?.requestSubmit();
+                }}
+                placeholder="Ask Gmail or Calendar to search, summarize, or draft a change."
+                value={input}
+              />
+              <button
+                aria-controls="prompt-help-tooltip"
+                aria-expanded={isPromptHelpOpen}
+                aria-label={
+                  isPromptHelpOpen ? "Hide prompt examples" : "Show prompt examples"
+                }
+                className={`absolute flex items-center justify-center rounded-full border border-slate-200 bg-white font-semibold text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-700 ${
+                  isExpanded
+                    ? "right-4 top-4 h-9 w-9 text-sm"
+                    : "right-3 top-3 h-8 w-8 text-sm"
+                }`}
+                onClick={() => setIsPromptHelpOpen((current) => !current)}
+                type="button"
               >
-                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">
-                  Try asking
-                </p>
-                <div className="mt-3 space-y-2 text-sm leading-6 text-slate-600">
-                  <p>&ldquo;Find my most recent email.&rdquo;</p>
-                  <p>&ldquo;Show my next three events with Alice this week.&rdquo;</p>
-                  <p>
-                    &ldquo;Draft moving tomorrow&apos;s 2pm design review to 3pm,
-                    but do not notify attendees.&rdquo;
+                {isPromptHelpOpen ? (
+                  <X aria-hidden="true" className="h-4 w-4" strokeWidth={2} />
+                ) : (
+                  "?"
+                )}
+              </button>
+              {isPromptHelpOpen ? (
+                <div
+                  className={`absolute bottom-[calc(100%+0.75rem)] right-0 z-10 w-full rounded-[1.25rem] border border-slate-200 bg-white shadow-[0_20px_50px_rgba(15,23,42,0.14)] ${
+                    isExpanded ? "max-w-sm p-4" : "max-w-sm p-4"
+                  }`}
+                  id="prompt-help-tooltip"
+                  role="tooltip"
+                >
+                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">
+                    Try asking
                   </p>
+                  <div className="mt-3 space-y-2 text-sm leading-6 text-slate-600">
+                    <p>&ldquo;Find my most recent email.&rdquo;</p>
+                    <p>&ldquo;Show my next three events with Alice this week.&rdquo;</p>
+                    <p>
+                      &ldquo;Draft moving tomorrow&apos;s 2pm design review to 3pm,
+                      but do not notify attendees.&rdquo;
+                    </p>
+                  </div>
                 </div>
-              </div>
-            ) : null}
+              ) : null}
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <p className={`${isExpanded ? "text-sm" : "text-xs"} text-slate-500`}>
+                {initialApprovalMode.description}
+              </p>
+              <button
+                className={`rounded-full bg-slate-950 font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400 ${
+                  isExpanded ? "px-6 py-3 text-sm" : "px-5 py-3 text-sm"
+                }`}
+                disabled={
+                  isLoadingMessages ||
+                  isSubmitting ||
+                  isDeletingChat ||
+                  !input.trim()
+                }
+                type="submit"
+              >
+                {isSubmitting ? "Sending..." : "Send"}
+              </button>
+            </div>
           </div>
-          <div className="flex items-center justify-between gap-3">
-            <p className={`${isExpanded ? "text-sm" : "text-xs"} text-slate-500`}>
-              {initialApprovalMode.description}
-            </p>
-            <button
-              className={`rounded-full bg-slate-950 font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400 ${
-                isExpanded ? "px-6 py-3 text-sm" : "px-5 py-3 text-sm"
-              }`}
-              disabled={
-                isLoadingMessages ||
-                isSubmitting ||
-                isDeletingChat ||
-                !input.trim()
-              }
-              type="submit"
-            >
-              {isSubmitting ? "Sending..." : "Send"}
-            </button>
-          </div>
-        </div>
-      </form>
+        </form>
+      ) : null}
     </section>
   );
 }

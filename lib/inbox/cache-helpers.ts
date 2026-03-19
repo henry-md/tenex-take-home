@@ -13,6 +13,7 @@ export type InboxStateRow<TThread = unknown, TMembership = unknown> = {
 };
 
 export type LoadedInboxStatePayload<TThread = unknown, TMembership = unknown> = {
+  isPartial: boolean;
   payload: InboxStatePayloadShape<TThread, TMembership>;
   requiresSave: boolean;
 };
@@ -47,7 +48,7 @@ export function createLimitedInboxStatePayload<TThread, TMembership>(
   return limitedPayload;
 }
 
-export function selectCompatibleInboxStatePayload<TThread, TMembership>(input: {
+export function selectCachedInboxStatePayload<TThread, TMembership>(input: {
   configuredThreadLimit: number;
   expectedCacheKey: string;
   rows: InboxStateRow<TThread, TMembership>[];
@@ -67,22 +68,49 @@ export function selectCompatibleInboxStatePayload<TThread, TMembership>(input: {
     });
   const compatibleRow = compatibleRows[0];
 
-  if (!compatibleRow) {
-    return null;
-  }
+  if (compatibleRow) {
+    if (compatibleRow.payload.configuredThreadLimit === input.configuredThreadLimit) {
+      return {
+        isPartial: false,
+        payload: compatibleRow.payload,
+        requiresSave: compatibleRow.cacheKey !== input.expectedCacheKey,
+      };
+    }
 
-  if (compatibleRow.payload.configuredThreadLimit === input.configuredThreadLimit) {
     return {
-      payload: compatibleRow.payload,
-      requiresSave: compatibleRow.cacheKey !== input.expectedCacheKey,
+      isPartial: false,
+      payload: createLimitedInboxStatePayload(
+        compatibleRow.payload,
+        input.configuredThreadLimit,
+      ),
+      requiresSave: true,
     };
   }
 
+  const partialRows = input.rows
+    .filter(
+      (row) => row.payload.configuredThreadLimit < input.configuredThreadLimit,
+    )
+    .sort((left, right) => {
+      const updatedAtDelta = right.updatedAt.getTime() - left.updatedAt.getTime();
+
+      if (updatedAtDelta !== 0) {
+        return updatedAtDelta;
+      }
+
+      return right.payload.configuredThreadLimit - left.payload.configuredThreadLimit;
+    });
+  const partialRow = partialRows[0];
+
+  if (!partialRow) {
+    return null;
+  }
+
   return {
-    payload: createLimitedInboxStatePayload(
-      compatibleRow.payload,
-      input.configuredThreadLimit,
-    ),
+    isPartial: true,
+    payload: partialRow.payload,
     requiresSave: true,
   };
 }
+
+export const selectCompatibleInboxStatePayload = selectCachedInboxStatePayload;

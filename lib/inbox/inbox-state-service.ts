@@ -7,13 +7,13 @@ import {
   sortBucketNames,
 } from "@/lib/inbox/bucket-service";
 import {
+  type LoadedInboxStatePayload as LoadedLegacyInboxStatePayload,
+  selectCachedInboxStatePayload,
+} from "@/lib/inbox/cache-helpers";
+import {
   classifyThreadsAgainstBucket,
   classifyThreadsAgainstBuckets,
 } from "@/lib/inbox/inbox-classifier";
-import {
-  type LoadedInboxStatePayload,
-  selectCompatibleInboxStatePayload,
-} from "@/lib/inbox/cache-helpers";
 import {
   BucketRecord,
   CachedBucketMembership,
@@ -39,14 +39,52 @@ import { getWorkspaceInboxThreadLimit } from "@/lib/google-workspace/inbox-threa
 import { prisma } from "@/lib/prisma";
 import { upsertAppUser } from "@/lib/users";
 
-const INBOX_STATE_CACHE_KEY_PREFIX = "inbox-state-v2";
+const LEGACY_INBOX_STATE_CACHE_KEY_PREFIX = "inbox-state-v2";
+const INBOX_CACHE_KEY_PREFIX = "inbox-state-v3";
+const INBOX_MANIFEST_CACHE_KEY = `${INBOX_CACHE_KEY_PREFIX}:manifest`;
+const INBOX_THREAD_CACHE_KEY_PREFIX = `${INBOX_CACHE_KEY_PREFIX}:thread:`;
+const INBOX_BUCKET_MEMBERSHIP_CACHE_KEY_PREFIX =
+  `${INBOX_CACHE_KEY_PREFIX}:membership:`;
 
-function parseInboxStatePayload(value: unknown): InboxStatePayload | null {
+type LegacyInboxStatePayload = {
+  bucketMembershipsByThreadId: Record<string, Record<string, CachedBucketMembership>>;
+  configuredThreadLimit: number;
+  threadIds: string[];
+  threadsById: Record<string, CachedThreadSnapshot>;
+  version: 2;
+};
+
+type InboxHeadManifestPayload = {
+  threadIds: string[];
+  version: 3;
+};
+
+type InboxThreadCachePayload = {
+  snapshot: CachedThreadSnapshot;
+  version: 3;
+};
+
+type InboxBucketMembershipCachePayload = {
+  bucketId: string;
+  membership: CachedBucketMembership;
+  threadId: string;
+  version: 3;
+};
+
+type LoadedInboxCacheState = {
+  manifestThreadIds: string[];
+  payload: InboxStatePayload | null;
+  requiresSave: boolean;
+};
+
+const CACHE_WRITE_BATCH_SIZE = 50;
+
+function parseLegacyInboxStatePayload(value: unknown): LegacyInboxStatePayload | null {
   if (!value || typeof value !== "object") {
     return null;
   }
 
-  const candidate = value as Partial<InboxStatePayload>;
+  const candidate = value as Partial<LegacyInboxStatePayload>;
 
   if (
     candidate.version !== 2 ||
@@ -60,7 +98,67 @@ function parseInboxStatePayload(value: unknown): InboxStatePayload | null {
     return null;
   }
 
-  return candidate as InboxStatePayload;
+  return candidate as LegacyInboxStatePayload;
+}
+
+function parseInboxHeadManifestPayload(value: unknown): InboxHeadManifestPayload | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Partial<InboxHeadManifestPayload>;
+
+  if (candidate.version !== 3 || !Array.isArray(candidate.threadIds)) {
+    return null;
+  }
+
+  return {
+    threadIds: candidate.threadIds.filter(
+      (threadId): threadId is string => typeof threadId === "string",
+    ),
+    version: 3,
+  };
+}
+
+function parseInboxThreadCachePayload(value: unknown): InboxThreadCachePayload | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Partial<InboxThreadCachePayload>;
+
+  if (
+    candidate.version !== 3 ||
+    !candidate.snapshot ||
+    typeof candidate.snapshot !== "object" ||
+    typeof candidate.snapshot.threadId !== "string"
+  ) {
+    return null;
+  }
+
+  return candidate as InboxThreadCachePayload;
+}
+
+function parseInboxBucketMembershipCachePayload(
+  value: unknown,
+): InboxBucketMembershipCachePayload | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Partial<InboxBucketMembershipCachePayload>;
+
+  if (
+    candidate.version !== 3 ||
+    typeof candidate.bucketId !== "string" ||
+    typeof candidate.threadId !== "string" ||
+    !candidate.membership ||
+    typeof candidate.membership !== "object"
+  ) {
+    return null;
+  }
+
+  return candidate as InboxBucketMembershipCachePayload;
 }
 
 function createEmptyInboxStatePayload(configuredThreadLimit: number): InboxStatePayload {
@@ -69,7 +167,7 @@ function createEmptyInboxStatePayload(configuredThreadLimit: number): InboxState
     configuredThreadLimit,
     threadIds: [],
     threadsById: {},
-    version: 2,
+    version: 3,
   };
 }
 
@@ -81,19 +179,151 @@ function getBucketPromptHashes(buckets: BucketRecord[]) {
   return new Map(buckets.map((bucket) => [bucket.id, getBucketPromptHash(bucket)]));
 }
 
-function getInboxStateCacheKey(configuredThreadLimit: number) {
-  return `${INBOX_STATE_CACHE_KEY_PREFIX}:${configuredThreadLimit}`;
-}
-
 function getInboxStateCacheKeyHash(cacheKey: string) {
   return createHash("sha256").update(cacheKey).digest("hex");
 }
 
-async function loadInboxStatePayload(ownerId: string, configuredThreadLimit: number) {
+function getInboxThreadCacheKey(threadId: string) {
+  return `${INBOX_THREAD_CACHE_KEY_PREFIX}${threadId}`;
+}
+
+function getInboxBucketMembershipCacheKey(threadId: string, bucketId: string) {
+  return `${INBOX_BUCKET_MEMBERSHIP_CACHE_KEY_PREFIX}${threadId}:${bucketId}`;
+}
+
+function buildInboxStatePayload(input: {
+  configuredThreadLimit: number;
+  membershipsByThreadId: Record<string, Record<string, CachedBucketMembership>>;
+  orderedThreadIds: string[];
+  snapshotsById: Record<string, CachedThreadSnapshot>;
+}) {
+  const payload = createEmptyInboxStatePayload(input.configuredThreadLimit);
+
+  for (const threadId of input.orderedThreadIds.slice(0, input.configuredThreadLimit)) {
+    const snapshot = input.snapshotsById[threadId];
+
+    if (!snapshot) {
+      continue;
+    }
+
+    payload.threadIds.push(threadId);
+    payload.threadsById[threadId] = snapshot;
+    payload.bucketMembershipsByThreadId[threadId] = {
+      ...(input.membershipsByThreadId[threadId] ?? {}),
+    };
+  }
+
+  return payload;
+}
+
+async function loadInboxHeadManifest(ownerId: string) {
+  const row = await prisma.inboxClassificationCache.findUnique({
+    where: {
+      ownerId_cacheKeyHash: {
+        cacheKeyHash: getInboxStateCacheKeyHash(INBOX_MANIFEST_CACHE_KEY),
+        ownerId,
+      },
+    },
+    select: {
+      payload: true,
+    },
+  });
+
+  return parseInboxHeadManifestPayload(row?.payload)?.threadIds ?? [];
+}
+
+async function loadCachedThreadSnapshots(ownerId: string, threadIds: string[]) {
+  if (!threadIds.length) {
+    return {};
+  }
+
+  const rows = await prisma.inboxClassificationCache.findMany({
+    where: {
+      cacheKeyHash: {
+        in: threadIds.map((threadId) =>
+          getInboxStateCacheKeyHash(getInboxThreadCacheKey(threadId)),
+        ),
+      },
+      ownerId,
+    },
+    select: {
+      payload: true,
+    },
+  });
+
+  const snapshotsById: Record<string, CachedThreadSnapshot> = {};
+
+  for (const row of rows) {
+    const payload = parseInboxThreadCachePayload(row.payload);
+
+    if (!payload) {
+      continue;
+    }
+
+    snapshotsById[payload.snapshot.threadId] = payload.snapshot;
+  }
+
+  return snapshotsById;
+}
+
+async function loadCachedBucketMemberships(input: {
+  bucketIds: string[];
+  ownerId: string;
+  threadIds: string[];
+}) {
+  if (!input.threadIds.length || !input.bucketIds.length) {
+    return {};
+  }
+
+  const rows = await prisma.inboxClassificationCache.findMany({
+    where: {
+      cacheKeyHash: {
+        in: input.threadIds.flatMap((threadId) =>
+          input.bucketIds.map((bucketId) =>
+            getInboxStateCacheKeyHash(
+              getInboxBucketMembershipCacheKey(threadId, bucketId),
+            ),
+          ),
+        ),
+      },
+      ownerId: input.ownerId,
+    },
+    select: {
+      payload: true,
+    },
+  });
+
+  const membershipsByThreadId: Record<
+    string,
+    Record<string, CachedBucketMembership>
+  > = {};
+
+  for (const row of rows) {
+    const payload = parseInboxBucketMembershipCachePayload(row.payload);
+
+    if (!payload) {
+      continue;
+    }
+
+    if (!membershipsByThreadId[payload.threadId]) {
+      membershipsByThreadId[payload.threadId] = {};
+    }
+
+    membershipsByThreadId[payload.threadId][payload.bucketId] =
+      payload.membership;
+  }
+
+  return membershipsByThreadId;
+}
+
+async function loadLegacyInboxStatePayload(
+  ownerId: string,
+  configuredThreadLimit: number,
+) {
   const rows = await prisma.inboxClassificationCache.findMany({
     where: {
       cacheKey: {
-        startsWith: INBOX_STATE_CACHE_KEY_PREFIX,
+        startsWith: LEGACY_INBOX_STATE_CACHE_KEY_PREFIX,
       },
       ownerId,
     },
@@ -103,10 +333,10 @@ async function loadInboxStatePayload(ownerId: string, configuredThreadLimit: num
       updatedAt: true,
     },
   });
-  const compatibleRows = rows.flatMap((row) => {
-    const payload = parseInboxStatePayload(row.payload);
+  const parsedRows = rows.flatMap((row) => {
+    const payload = parseLegacyInboxStatePayload(row.payload);
 
-    if (!payload || payload.configuredThreadLimit < configuredThreadLimit) {
+    if (!payload) {
       return [];
     }
 
@@ -118,33 +348,232 @@ async function loadInboxStatePayload(ownerId: string, configuredThreadLimit: num
       },
     ];
   });
-
-  return selectCompatibleInboxStatePayload({
+  const cachedState = selectCachedInboxStatePayload({
     configuredThreadLimit,
-    expectedCacheKey: getInboxStateCacheKey(configuredThreadLimit),
-    rows: compatibleRows,
-  }) as LoadedInboxStatePayload<CachedThreadSnapshot, CachedBucketMembership> | null;
+    expectedCacheKey: `${LEGACY_INBOX_STATE_CACHE_KEY_PREFIX}:${configuredThreadLimit}`,
+    rows: parsedRows,
+  }) as LoadedLegacyInboxStatePayload<
+    CachedThreadSnapshot,
+    CachedBucketMembership
+  > | null;
+
+  if (!cachedState) {
+    return null;
+  }
+
+  return {
+    manifestThreadIds: cachedState.payload.threadIds,
+    payload: buildInboxStatePayload({
+      configuredThreadLimit,
+      membershipsByThreadId: cachedState.payload.bucketMembershipsByThreadId,
+      orderedThreadIds: cachedState.payload.threadIds,
+      snapshotsById: cachedState.payload.threadsById,
+    }),
+    requiresSave: true,
+  } satisfies LoadedInboxCacheState;
 }
 
-async function saveInboxStatePayload(ownerId: string, payload: InboxStatePayload) {
-  const cacheKey = getInboxStateCacheKey(payload.configuredThreadLimit);
+async function loadInboxStatePayload(input: {
+  buckets: BucketRecord[];
+  configuredThreadLimit: number;
+  ownerId: string;
+}): Promise<LoadedInboxCacheState | null> {
+  const manifestThreadIds = (await loadInboxHeadManifest(input.ownerId)).slice(
+    0,
+    input.configuredThreadLimit,
+  );
+
+  if (manifestThreadIds.length) {
+    const [snapshotsById, membershipsByThreadId] = await Promise.all([
+      loadCachedThreadSnapshots(input.ownerId, manifestThreadIds),
+      loadCachedBucketMemberships({
+        bucketIds: input.buckets.map((bucket) => bucket.id),
+        ownerId: input.ownerId,
+        threadIds: manifestThreadIds,
+      }),
+    ]);
+
+    return {
+      manifestThreadIds,
+      payload: buildInboxStatePayload({
+        configuredThreadLimit: input.configuredThreadLimit,
+        membershipsByThreadId,
+        orderedThreadIds: manifestThreadIds,
+        snapshotsById,
+      }),
+      requiresSave: false,
+    };
+  }
+
+  return loadLegacyInboxStatePayload(
+    input.ownerId,
+    input.configuredThreadLimit,
+  );
+}
+
+async function saveInboxStatePayload(input: {
+  buckets: BucketRecord[];
+  ownerId: string;
+  payload: InboxStatePayload;
+}) {
+  const keepCacheKeyHashes = new Set<string>([
+    getInboxStateCacheKeyHash(INBOX_MANIFEST_CACHE_KEY),
+  ]);
+  const writes: Prisma.PrismaPromise<unknown>[] = [];
+
+  for (const threadId of input.payload.threadIds) {
+    const snapshot = input.payload.threadsById[threadId];
+
+    if (!snapshot) {
+      continue;
+    }
+
+    const threadCacheKey = getInboxThreadCacheKey(threadId);
+
+    keepCacheKeyHashes.add(getInboxStateCacheKeyHash(threadCacheKey));
+    writes.push(
+      prisma.inboxClassificationCache.upsert({
+        where: {
+          ownerId_cacheKeyHash: {
+            cacheKeyHash: getInboxStateCacheKeyHash(threadCacheKey),
+            ownerId: input.ownerId,
+          },
+        },
+        create: {
+          cacheKey: threadCacheKey,
+          cacheKeyHash: getInboxStateCacheKeyHash(threadCacheKey),
+          ownerId: input.ownerId,
+          payload: {
+            snapshot,
+            version: 3,
+          } satisfies InboxThreadCachePayload as Prisma.InputJsonValue,
+        },
+        update: {
+          cacheKey: threadCacheKey,
+          payload: {
+            snapshot,
+            version: 3,
+          } satisfies InboxThreadCachePayload as Prisma.InputJsonValue,
+        },
+      }),
+    );
+
+    for (const bucket of input.buckets) {
+      const membership =
+        input.payload.bucketMembershipsByThreadId[threadId]?.[bucket.id];
+
+      if (!membership) {
+        continue;
+      }
+
+      const membershipCacheKey = getInboxBucketMembershipCacheKey(
+        threadId,
+        bucket.id,
+      );
+
+      keepCacheKeyHashes.add(getInboxStateCacheKeyHash(membershipCacheKey));
+      writes.push(
+        prisma.inboxClassificationCache.upsert({
+          where: {
+            ownerId_cacheKeyHash: {
+              cacheKeyHash: getInboxStateCacheKeyHash(membershipCacheKey),
+              ownerId: input.ownerId,
+            },
+          },
+          create: {
+            cacheKey: membershipCacheKey,
+            cacheKeyHash: getInboxStateCacheKeyHash(membershipCacheKey),
+            ownerId: input.ownerId,
+            payload: {
+              bucketId: bucket.id,
+              membership,
+              threadId,
+              version: 3,
+            } satisfies InboxBucketMembershipCachePayload as Prisma.InputJsonValue,
+          },
+          update: {
+            cacheKey: membershipCacheKey,
+            payload: {
+              bucketId: bucket.id,
+              membership,
+              threadId,
+              version: 3,
+            } satisfies InboxBucketMembershipCachePayload as Prisma.InputJsonValue,
+          },
+        }),
+      );
+    }
+  }
 
   await prisma.inboxClassificationCache.upsert({
     where: {
       ownerId_cacheKeyHash: {
-        cacheKeyHash: getInboxStateCacheKeyHash(cacheKey),
-        ownerId,
+        cacheKeyHash: getInboxStateCacheKeyHash(INBOX_MANIFEST_CACHE_KEY),
+        ownerId: input.ownerId,
       },
     },
     create: {
-      cacheKey,
-      cacheKeyHash: getInboxStateCacheKeyHash(cacheKey),
-      ownerId,
-      payload: payload as Prisma.InputJsonValue,
+      cacheKey: INBOX_MANIFEST_CACHE_KEY,
+      cacheKeyHash: getInboxStateCacheKeyHash(INBOX_MANIFEST_CACHE_KEY),
+      ownerId: input.ownerId,
+      payload: {
+        threadIds: input.payload.threadIds,
+        version: 3,
+      } satisfies InboxHeadManifestPayload as Prisma.InputJsonValue,
     },
     update: {
-      cacheKey,
-      payload: payload as Prisma.InputJsonValue,
+      cacheKey: INBOX_MANIFEST_CACHE_KEY,
+      payload: {
+        threadIds: input.payload.threadIds,
+        version: 3,
+      } satisfies InboxHeadManifestPayload as Prisma.InputJsonValue,
+    },
+  });
+
+  for (let startIndex = 0; startIndex < writes.length; startIndex += CACHE_WRITE_BATCH_SIZE) {
+    await Promise.all(
+      writes.slice(startIndex, startIndex + CACHE_WRITE_BATCH_SIZE),
+    );
+  }
+
+  await prisma.inboxClassificationCache.deleteMany({
+    where: {
+      ownerId: input.ownerId,
+      cacheKey: {
+        startsWith: LEGACY_INBOX_STATE_CACHE_KEY_PREFIX,
+      },
+    },
+  });
+
+  await prisma.inboxClassificationCache.deleteMany({
+    where: {
+      ownerId: input.ownerId,
+      AND: [
+        {
+          OR: [
+            {
+              cacheKey: {
+                equals: INBOX_MANIFEST_CACHE_KEY,
+              },
+            },
+            {
+              cacheKey: {
+                startsWith: INBOX_THREAD_CACHE_KEY_PREFIX,
+              },
+            },
+            {
+              cacheKey: {
+                startsWith: INBOX_BUCKET_MEMBERSHIP_CACHE_KEY_PREFIX,
+              },
+            },
+          ],
+        },
+        {
+          cacheKeyHash: {
+            notIn: [...keepCacheKeyHashes],
+          },
+        },
+      ],
     },
   });
 }
@@ -294,6 +723,7 @@ function buildHomepageDataFromState(
 
     for (const bucketName of bucketNames) {
       groupedThreads.get(bucketName)?.push({
+        body: snapshot.body,
         bucketNames,
         lastMessageAt: snapshot.lastMessageAt,
         preview: snapshot.preview,
@@ -414,49 +844,94 @@ async function ensureBucketMembershipsAreCurrent(
   return true;
 }
 
+function getThreadIdsToFetchFromGmail(input: {
+  cachedManifestThreadIds: string[];
+  cachedSnapshotsById: Record<string, CachedThreadSnapshot>;
+  changeSummary: InboxSyncChangeSummary;
+  currentThreadIds: string[];
+}) {
+  const missingThreadIds = input.currentThreadIds.filter(
+    (threadId) => !input.cachedSnapshotsById[threadId],
+  );
+
+  if (input.changeSummary.kind === "mixed") {
+    return input.currentThreadIds;
+  }
+
+  if (input.changeSummary.kind === "none") {
+    return missingThreadIds;
+  }
+
+  const cachedManifestThreadIdSet = new Set(input.cachedManifestThreadIds);
+  const addedThreadIds = input.currentThreadIds.filter(
+    (threadId) => !cachedManifestThreadIdSet.has(threadId),
+  );
+
+  return Array.from(new Set([...addedThreadIds, ...missingThreadIds]));
+}
+
 async function synchronizeInboxStateFromGmail(input: {
   accessToken: string;
   buckets: BucketRecord[];
-  existingPayload: InboxStatePayload | null;
+  cachedManifestThreadIds: string[];
   inboxThreadLimit: number;
+  ownerId: string;
 }) {
   const threadIds = await listRecentInboxThreadIds(input.accessToken, {
     maxResults: input.inboxThreadLimit,
   });
-  const threads = await getEmailThreads(input.accessToken, threadIds);
+  const [cachedSnapshotsById, cachedMembershipsByThreadId] = await Promise.all([
+    loadCachedThreadSnapshots(input.ownerId, threadIds),
+    loadCachedBucketMemberships({
+      bucketIds: input.buckets.map((bucket) => bucket.id),
+      ownerId: input.ownerId,
+      threadIds,
+    }),
+  ]);
+  const changeSummary = summarizeInboxSyncChanges({
+    cachedThreadIds: input.cachedManifestThreadIds,
+    currentThreadIds: threadIds,
+  });
+  const threadIdsToFetch = getThreadIdsToFetchFromGmail({
+    cachedManifestThreadIds: input.cachedManifestThreadIds,
+    cachedSnapshotsById,
+    changeSummary,
+    currentThreadIds: threadIds,
+  });
+  const fetchedThreads = threadIdsToFetch.length
+    ? await getEmailThreads(input.accessToken, threadIdsToFetch)
+    : [];
+  const fetchedThreadsById = new Map(
+    fetchedThreads.map((thread) => [thread.id, thread] as const),
+  );
   const payload = createEmptyInboxStatePayload(input.inboxThreadLimit);
   const threadsNeedingFullClassification: EmailThreadSummary[] = [];
-  const currentThreadTimestamps = new Map(
-    threads.map((thread) => [thread.id, thread.lastMessageAt] as const),
-  );
-  const cachedThreadTimestamps = new Map(
-    Object.values(input.existingPayload?.threadsById ?? {}).map((thread) => [
-      thread.threadId,
-      thread.lastMessageAt,
-    ]),
-  );
-  const changeSummary = summarizeInboxSyncChanges({
-    cachedThreadIds: input.existingPayload?.threadIds ?? [],
-    cachedThreadTimestamps,
-    currentThreadIds: threadIds,
-    currentThreadTimestamps,
-  });
 
-  payload.threadIds = threadIds;
+  for (const threadId of threadIds) {
+    const fetchedThread = fetchedThreadsById.get(threadId);
+    const snapshot = fetchedThread
+      ? summarizeThreadForPreview(fetchedThread)
+      : cachedSnapshotsById[threadId];
 
-  for (const thread of threads) {
-    const snapshot = summarizeThreadForPreview(thread);
-    const existingSnapshot = input.existingPayload?.threadsById[thread.id];
+    if (!snapshot) {
+      continue;
+    }
+
+    const existingSnapshot = cachedSnapshotsById[threadId];
     const existingMemberships =
-      existingSnapshot?.fingerprint === snapshot.fingerprint
-        ? input.existingPayload?.bucketMembershipsByThreadId[thread.id] ?? {}
+      !fetchedThread || existingSnapshot?.fingerprint === snapshot.fingerprint
+        ? cachedMembershipsByThreadId[threadId] ?? {}
         : {};
 
-    payload.threadsById[thread.id] = snapshot;
-    payload.bucketMembershipsByThreadId[thread.id] = { ...existingMemberships };
+    payload.threadIds.push(threadId);
+    payload.threadsById[threadId] = snapshot;
+    payload.bucketMembershipsByThreadId[threadId] = { ...existingMemberships };
 
-    if (!existingSnapshot || existingSnapshot.fingerprint !== snapshot.fingerprint) {
-      threadsNeedingFullClassification.push(thread);
+    if (
+      fetchedThread &&
+      (!existingSnapshot || existingSnapshot.fingerprint !== snapshot.fingerprint)
+    ) {
+      threadsNeedingFullClassification.push(fetchedThread);
     }
   }
 
@@ -526,6 +1001,9 @@ export async function hasInboxClassificationCache(ownerEmail: string) {
 
   const cacheRowCount = await prisma.inboxClassificationCache.count({
     where: {
+      cacheKey: {
+        startsWith: "inbox-state-v",
+      },
       ownerId: owner.id,
     },
   });
@@ -545,10 +1023,20 @@ export async function getInboxRefreshStatus(input: {
     name: input.ownerName,
   });
   const inboxThreadLimit = await getWorkspaceInboxThreadLimit(input.ownerEmail);
-  const cachedState = await loadInboxStatePayload(owner.id, inboxThreadLimit);
-  const parsedPayload = cachedState?.payload ?? null;
+  const manifestThreadIds = (await loadInboxHeadManifest(owner.id)).slice(
+    0,
+    inboxThreadLimit,
+  );
+  const fallbackLegacyState =
+    manifestThreadIds.length === 0
+      ? await loadLegacyInboxStatePayload(owner.id, inboxThreadLimit)
+      : null;
+  const cachedThreadIds =
+    manifestThreadIds.length > 0
+      ? manifestThreadIds
+      : fallbackLegacyState?.manifestThreadIds ?? [];
 
-  if (!parsedPayload) {
+  if (!cachedThreadIds.length) {
     return {
       changedThreadCount: 0,
       checkedAt: new Date().toISOString(),
@@ -560,7 +1048,7 @@ export async function getInboxRefreshStatus(input: {
     maxResults: inboxThreadLimit,
   });
   const changeSummary = summarizeInboxSyncChanges({
-    cachedThreadIds: parsedPayload.threadIds,
+    cachedThreadIds,
     currentThreadIds: latestThreadIds,
   });
 
@@ -586,17 +1074,25 @@ export async function loadInboxHomepage(input: {
   const buckets = await ensureOwnerBuckets(owner.id);
   const inboxThreadLimit = await getWorkspaceInboxThreadLimit(input.ownerEmail);
   const sortingStartedAt = performance.now();
-  const cachedState = await loadInboxStatePayload(owner.id, inboxThreadLimit);
+  const cachedState = await loadInboxStatePayload({
+    buckets,
+    configuredThreadLimit: inboxThreadLimit,
+    ownerId: owner.id,
+  });
   const cachedPayload = cachedState?.payload ?? null;
 
-  if (cachedPayload && !input.refresh) {
+  if (cachedPayload?.threadIds.length && !input.refresh) {
     const hadMembershipUpdates = await ensureBucketMembershipsAreCurrent(
       cachedPayload,
       buckets,
     );
 
     if (hadMembershipUpdates || cachedState?.requiresSave) {
-      await saveInboxStatePayload(owner.id, cachedPayload);
+      await saveInboxStatePayload({
+        buckets,
+        ownerId: owner.id,
+        payload: cachedPayload,
+      });
     }
 
     return {
@@ -620,12 +1116,17 @@ export async function loadInboxHomepage(input: {
   const synchronized = await synchronizeInboxStateFromGmail({
     accessToken: input.accessToken,
     buckets,
-    existingPayload: cachedPayload,
+    cachedManifestThreadIds: cachedState?.manifestThreadIds ?? [],
     inboxThreadLimit,
+    ownerId: owner.id,
   });
   const gmailFetchMs = Math.round(performance.now() - gmailFetchStartedAt);
 
-  await saveInboxStatePayload(owner.id, synchronized.payload);
+  await saveInboxStatePayload({
+    buckets,
+    ownerId: owner.id,
+    payload: synchronized.payload,
+  });
 
   return {
     changeSummary: synchronized.changeSummary,
