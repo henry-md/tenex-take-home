@@ -201,7 +201,7 @@ const GOOGLE_WORKSPACE_TOOLS: FunctionTool[] = [
     type: "function",
     name: "search_email_threads",
     description:
-      "Search recent Gmail threads and return compact thread summaries. Use this when the user asks for their latest, last, or most recent email and no thread id is known yet.",
+      "Search recent Gmail threads and return compact thread summaries. Use this when the user asks for their latest, last, or most recent email and no thread id is known yet. The query should be a Gmail search string when filtering is needed, for example: from:linkedin, from:(linkedin.com OR indeed.com), subject:\"interview\", newer_than:30d, has:attachment, in:inbox, or combinations like from:linkedin newer_than:30d.",
     strict: false,
     parameters: {
       type: "object",
@@ -213,6 +213,8 @@ const GOOGLE_WORKSPACE_TOOLS: FunctionTool[] = [
           maximum: 10,
         },
         query: {
+          description:
+            "Optional Gmail search string. Use Gmail-style operators such as from:, to:, subject:, newer_than:, older_than:, has:attachment, is:unread, in:inbox, and quoted phrases. Examples: from:linkedin newer_than:30d, subject:\"interview\" newer_than:90d, from:(greenhouse.io OR lever.co) in:inbox.",
           type: "string",
         },
       },
@@ -419,6 +421,7 @@ function getSystemPrompt() {
     "You are Inbox Concierge, a concise Google Workspace assistant for Gmail triage and calendar coordination.",
     "Use the available tools when the user asks about concrete Gmail threads, labels, calendar events, or actions.",
     "If the user asks about their own Gmail or Calendar data, do not answer from memory or with a capability disclaimer. Use a read tool first unless the request is too ambiguous to execute.",
+    "When calling search_email_threads with a query, use Gmail search syntax rather than plain English whenever possible. Valid examples include from:linkedin newer_than:30d, subject:\"interview\" newer_than:90d, from:(greenhouse.io OR lever.co), is:unread, has:attachment, and quoted phrases.",
     "The UI can render structured email cards from Gmail read tool results.",
     "Do not restate subject, sender, timestamp, or snippet in prose unless the user explicitly asks for a text-only rendering.",
     "If the user wants emails shown in the chat, call set_chat_response_mode with showEmailResults=true and keep your prose to a single short framing sentence.",
